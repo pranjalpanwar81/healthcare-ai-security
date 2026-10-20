@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const MASTER_KEY_ENV = process.env.MASTER_KEY;
+const MASTER_KEY_ENV = process.env.MASTER_KEY?.trim();
 
 function loadMasterKey() {
   if (MASTER_KEY_ENV) {

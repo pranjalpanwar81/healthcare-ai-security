@@ -15,8 +15,8 @@ import { seedDemo } from './seed.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const PROD = process.env.NODE_ENV === 'production';
-const ENROLL_CODE = process.env.HOSPITAL_ENROLL_CODE || (PROD ? null : 'HOSPITAL-IT-2026');
-const DOCTOR_CODE = process.env.DOCTOR_REGISTRATION_CODE || (PROD ? null : 'DOCTOR-2026');
+const ENROLL_CODE = process.env.HOSPITAL_ENROLL_CODE?.trim() || (PROD ? null : 'HOSPITAL-IT-2026');
+const DOCTOR_CODE = process.env.DOCTOR_REGISTRATION_CODE?.trim() || (PROD ? null : 'DOCTOR-2026');
 const SESSION_MINUTES = { patient: 120, doctor: 30, admin: 30 };
 const COOKIE = 'hg_session';
 
@@ -158,7 +158,7 @@ app.get('/api/network/status', (req, res) => {
 
 app.post('/api/network/enroll', limit('enroll', 5, 15 * 60 * 1000), (req, res) => {
   const { code, label } = req.body || {};
-  if (!ENROLL_CODE || typeof code !== 'string' || code !== ENROLL_CODE) {
+  if (!ENROLL_CODE || typeof code !== 'string' || code.trim() !== ENROLL_CODE) {
     audit.record({ action: 'network.enroll', outcome: 'denied', ip: ipOf(req), detail: { reason: 'bad code' } });
     return fail(res, 403, 'That enrolment code is not valid. Ask hospital IT for the current code.');
   }
