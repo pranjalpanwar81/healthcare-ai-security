@@ -61,7 +61,8 @@ const limit = (name, max, windowMs) => (req, res, next) => {
 app.use('/api/', limit('api', 300, 60 * 1000));
 
 const db = store.data;
-const ipOf = (req) => req.ip;
+// On Vercel the edge sets x-real-ip to the true client address and strips any client-supplied value.
+const ipOf = (req) => (process.env.VERCEL ? String(req.headers['x-real-ip'] || req.ip) : req.ip);
 const findUser = (id) => db().users.find((u) => u.id === id);
 const publicUser = (u) => {
   const pii = open(u.pii, u.id);
@@ -492,4 +493,6 @@ app.use((err, req, res, next) => {
   return fail(res, err.type === 'entity.too.large' ? 413 : 500, 'Something went wrong. Please try again.');
 });
 
-app.listen(PORT, () => console.log(`HealthGuard API listening on ${PORT}`));
+if (!process.env.VERCEL) app.listen(PORT, () => console.log(`HealthGuard API listening on ${PORT}`));
+
+export default app;

@@ -39,6 +39,12 @@ Dev defaults: enrol code `HOSPITAL-IT-2026`, doctor code `DOCTOR-2026`.
 ## Deployment
 Render web service (see `render.yaml`). The free plan has no persistent disk, so data resets to the seed on each deploy or restart. Fine for the demo; move to Postgres or a disk for real use.
 
+## Vercel deployment (current)
+- `vercel.json`: Vite static build to `dist`; `api/index.js` exports the Express app as one function; `/api/*` is rewritten to it and other paths to `index.html`.
+- Data lives in `/tmp/healthguard` per function instance, so it resets on cold start and is not shared between instances. Demo accounts use stable ids, so sessions stay valid across instances. Runtime changes (new records, consents) can vanish. A real deployment needs a shared database.
+- The client address comes from the `x-real-ip` header set by Vercel's edge.
+- Environment variables in the Vercel project: `MASTER_KEY`, `HOSPITAL_ENROLL_CODE`, `DOCTOR_REGISTRATION_CODE`, `NODE_ENV=production`.
+
 ## Open items / next
 - Persistent database (Postgres) instead of the JSON file.
 - TOTP second factor for clinicians.
@@ -46,4 +52,5 @@ Render web service (see `render.yaml`). The free plan has no persistent disk, so
 - `ml/` holds the original TensorFlow pipeline from v1 (not used by the v2 server).
 
 ## Log
+- 2026-10-21: Deployed to Vercel (serverless API, stable demo ids).
 - 2026-10-21: v2 rebuild. Security core, explainable model, patient/clinic/security UIs, deploy.

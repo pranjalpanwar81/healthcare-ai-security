@@ -44,7 +44,8 @@ const visits = {
 export function seedDemo() {
   const db = data();
   const users = people.map((p) => {
-    const id = randomId(p.role === 'patient' ? 'pat' : p.role === 'doctor' ? 'doc' : 'adm');
+    // Stable ids derived from the email, so every server instance seeds the same accounts.
+    const id = `${p.role === 'patient' ? 'pat' : p.role === 'doctor' ? 'doc' : 'adm'}_${blindIndex(p.email).slice(0, 12)}`;
     const u = {
       id, role: p.role, name: p.name, emailIndex: blindIndex(p.email), passwordHash: hashPassword(DEMO_PASSWORD),
       specialty: p.specialty, pii: seal({ email: p.email, phone: '', dob: '', gender: '', bloodGroup: '', allergies: '', ...(p.profile || {}) }, id),

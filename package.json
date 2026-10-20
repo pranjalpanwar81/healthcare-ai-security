@@ -16,6 +16,9 @@
   },
   "dependencies": {
     "@fontsource/atkinson-hyperlegible": "^5.2.8",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.48.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

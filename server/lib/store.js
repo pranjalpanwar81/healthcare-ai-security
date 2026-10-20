@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const dir = process.env.DATA_DIR || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
+const dir = process.env.DATA_DIR || (process.env.VERCEL ? '/tmp/healthguard' : null) || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const file = path.join(dir, 'healthguard.json');
 
 const empty = () => ({
