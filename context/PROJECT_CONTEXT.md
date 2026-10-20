@@ -37,13 +37,13 @@ Dev defaults: enrol code `HOSPITAL-IT-2026`, doctor code `DOCTOR-2026`.
 `npm install && npm --prefix server install`, then `npm --prefix server start` (API on 3001) and `npm run dev` (Vite on 5173, proxies /api). Security test suite: `npm --prefix server test` (28 checks; run against a fresh data dir).
 
 ## Deployment
-Render web service (see `render.yaml`). The free plan has no persistent disk, so data resets to the seed on each deploy or restart. Fine for the demo; move to Postgres or a disk for real use.
+Vercel (see the next section). Render config was removed.
 
 ## Vercel deployment (current)
 - `vercel.json`: Vite static build to `dist`; `api/index.js` exports the Express app as one function; `/api/*` is rewritten to it and other paths to `index.html`.
 - Data lives in `/tmp/healthguard` per function instance, so it resets on cold start and is not shared between instances. Demo accounts use stable ids, so sessions stay valid across instances. Runtime changes (new records, consents) can vanish. A real deployment needs a shared database.
 - The client address comes from the `x-real-ip` header set by Vercel's edge.
-- Environment variables in the Vercel project: `MASTER_KEY`, `HOSPITAL_ENROLL_CODE`, `DOCTOR_REGISTRATION_CODE`, `NODE_ENV=production`.
+- Environment variables in the Vercel project: `MASTER_KEY`, `HOSPITAL_ENROLL_CODE`, `DOCTOR_REGISTRATION_CODE`, `NODE_ENV=production` (build tools are regular dependencies, so the build still has Vite).
 
 ## Open items / next
 - Persistent database (Postgres) instead of the JSON file.

@@ -51,7 +51,7 @@ Local and private network addresses count as the hospital network in development
 
 ## Deploy
 
-`render.yaml` describes a single Render web service. Set `MASTER_KEY` (32 random bytes, base64), `HOSPITAL_ENROLL_CODE` and `DOCTOR_REGISTRATION_CODE`. Optionally set `HOSPITAL_NETWORKS` to the hospital's public address ranges.
+Deployed on Vercel: `vercel.json` serves the Vite build and runs `api/index.js` (the Express API) as a function. Set `MASTER_KEY` (32 random bytes, base64), `HOSPITAL_ENROLL_CODE` and `DOCTOR_REGISTRATION_CODE`. Optionally set `HOSPITAL_NETWORKS` to the hospital's public address ranges.
 
 ## Project layout
 
