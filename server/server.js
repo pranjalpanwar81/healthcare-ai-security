@@ -14,7 +14,7 @@ import { startMonitoring } from './lib/anomaly.js';
 import { seedDemo } from './seed.js';
 
 const PORT = Number(process.env.PORT || 3001);
-const PROD = process.env.NODE_ENV === 'production';
+const PROD = process.env.NODE_ENV?.trim() === 'production' || Boolean(process.env.VERCEL);
 const ENROLL_CODE = process.env.HOSPITAL_ENROLL_CODE?.trim() || (PROD ? null : 'HOSPITAL-IT-2026');
 const DOCTOR_CODE = process.env.DOCTOR_REGISTRATION_CODE?.trim() || (PROD ? null : 'DOCTOR-2026');
 const SESSION_MINUTES = { patient: 120, doctor: 30, admin: 30 };

@@ -48,7 +48,7 @@ function envNetworks() {
 
 export function trustedNetworks() {
   const list = [...envNetworks(), ...data().networks.map((n) => ({ ...n, source: 'enrolled' }))];
-  if (process.env.NODE_ENV !== 'production') {
+  if (!(process.env.NODE_ENV?.trim() === 'production' || process.env.VERCEL)) {
     list.push(...LOCAL_CIDRS.map((cidr) => ({ cidr, label: 'Local network (development)', source: 'dev' })));
   }
   return list;

@@ -12,7 +12,7 @@ function loadMasterKey() {
     if (buf.length !== 32) throw new Error('MASTER_KEY must be 32 bytes, base64 encoded');
     return buf;
   }
-  if (process.env.NODE_ENV === 'production') {
+  if ((process.env.NODE_ENV?.trim() === 'production' || process.env.VERCEL)) {
     throw new Error('MASTER_KEY must be set in production (32 random bytes, base64).');
   }
   // Development only: keep a local key next to the data so records survive restarts.
