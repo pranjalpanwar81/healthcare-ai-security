@@ -11,7 +11,7 @@ import { seal, open, rewrap, rotateKek, activeKekVersion, restoreKekVersion, bli
 import { checkNetwork, enrollNetwork, trustedNetworks, removeNetwork } from './lib/network.js';
 import { explain, modelCard, FEATURES } from './lib/xai.js';
 import { startMonitoring } from './lib/anomaly.js';
-import { seedDemo } from './seed.js';
+import { seedDemo, syncSeedPasswords } from './seed.js';
 
 const PORT = Number(process.env.PORT || 3001);
 const PROD = process.env.NODE_ENV?.trim() === 'production' || Boolean(process.env.VERCEL);
@@ -39,6 +39,7 @@ app.use('/api', async (req, res, next) => {
     await store.refresh();
     if (store.isEmpty()) seedDemo();
     restoreKekVersion(store.data().meta.kekVersion || 1);
+    syncSeedPasswords();
   } catch (err) {
     console.error('[store] refresh failed', err);
     return res.status(503).json({ error: 'The service is briefly unavailable. Please try again.' });

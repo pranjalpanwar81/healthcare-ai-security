@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 // Demo data. All people are fictional. Every value passes through the same sealing and audit paths as live data.
 import { data, save } from './lib/store.js';
 import { seal, blindIndex, hashPassword, randomId } from './lib/crypto.js';
@@ -49,6 +50,31 @@ const visits = {
       vitals: { age: 25, bmi: 21.4, systolic: 112, diastolic: 72, heartRate: 68, temperature: 36.6, glucose: 86, hba1c: 5.0, wbc: 6.5, crp: 2, coughDays: 0, fatigue: 2 } },
   ],
 };
+
+/**
+ * Keep initial accounts in step with the SEED_PASSWORDS secret. When the secret changes,
+ * the listed accounts get their new password once; other accounts are never touched.
+ */
+export function syncSeedPasswords() {
+  const raw = (process.env.SEED_PASSWORDS || '').trim();
+  if (!raw) return false;
+  const fingerprint = crypto.createHash('sha256').update(raw).digest('hex');
+  const db = data();
+  if (db.meta.seedPasswordsFingerprint === fingerprint) return false;
+  let map = {};
+  try { map = JSON.parse(raw); } catch { return false; }
+  for (const [email, password] of Object.entries(map)) {
+    const user = db.users.find((u) => u.emailIndex === blindIndex(email));
+    if (user && typeof password === 'string' && password) {
+      user.passwordHash = hashPassword(password);
+      user.failedLogins = 0;
+      user.lockedUntil = null;
+    }
+  }
+  db.meta.seedPasswordsFingerprint = fingerprint;
+  save();
+  return true;
+}
 
 export function seedDemo() {
   const db = data();
