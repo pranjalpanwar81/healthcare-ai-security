@@ -60,5 +60,6 @@ Vercel (see the next section). Render config was removed.
 ## Log
 - 2026-10-21: Premium visual layer (v3 block at the end of styles.css): Fraunces display headings, warm ivory canvas, evergreen and brass, dark sidebar, dark landing hero, entrance motion.
 - 2026-10-21: Care teams assigned by hospital, patient reporting, app shell redesign, 78-check suite, fixed malformed-JSON 500 and public top bar showing Sign in while signed in.
+- 2026-10-21: Easy passwords set at Harsh's request (in the SEED_PASSWORDS secret). `syncSeedPasswords()` re-applies the secret to the listed accounts whenever it changes.
 - 2026-10-21: Shared Blob store, per-account seed passwords via secret, demo panel removed, LHBC networks trusted.`n- 2026-10-21: Deployed to Vercel (serverless API, stable ids).
 - 2026-10-21: v2 rebuild. Security core, explainable model, patient/clinic/security UIs, deploy.
