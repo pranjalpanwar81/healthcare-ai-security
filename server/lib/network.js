@@ -40,10 +40,15 @@ export function inCidr(ip, cidr) {
   return (ipv6ToBigInt(ip) & mask) === (ipv6ToBigInt(range) & mask);
 }
 
+// HOSPITAL_NETWORKS: comma-separated entries, each "cidr" or "cidr=Label", e.g. "203.0.113.7/32=LHBC_Students".
 function envNetworks() {
   return (process.env.HOSPITAL_NETWORKS || '')
     .split(',').map((s) => s.trim()).filter(Boolean)
-    .map((cidr) => ({ cidr, label: 'Configured by hospital IT', source: 'env' }));
+    .map((entry) => {
+      const [cidr, ...label] = entry.split('=');
+      return { cidr: cidr.trim(), label: label.join('=').trim() || 'Configured by hospital IT', source: 'env' };
+    })
+    .filter((n) => net.isIP(n.cidr.split('/')[0]));
 }
 
 export function trustedNetworks() {
