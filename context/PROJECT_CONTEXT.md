@@ -18,7 +18,7 @@ One Node service. Express serves the API under `/api` and the built React app fr
 - `server/lib/network.js`: hospital-network gate for clinicians, using the server-observed public IP checked against CIDR allow-lists (env `HOSPITAL_NETWORKS` plus networks enrolled with `HOSPITAL_ENROLL_CODE`). In non-production, loopback and RFC1918 ranges are trusted. Enforced at sign-in and on every clinical request.
 - `server/lib/anomaly.js`: rules on every audit entry (bulk reads, off-hours in hospital timezone, repeated denials, failed-login bursts per IP, off-network clinician login, break-glass, network enrolment).
 - `server/lib/xai.js`: multinomial logistic regression trained at start-up (~2 s) on a seeded synthetic cohort (6000 rows, 12 features, 5 classes; about 98% held-out accuracy). Exact additive attributions (linear SHAP), plain-language summary, cumulative counterfactual, model card.
-- `server/lib/store.js`: JSON file at `server/data/healthguard.json` (gitignored). Seeds demo data on first boot (`server/seed.js`).
+- `server/lib/store.js`: a JSON file at `server/data/healthguard.json` locally (gitignored). On Vercel, the same document lives in the private Blob store `healthguard-data` at `healthguard/db.json` (`BLOB_READ_WRITE_TOKEN`), refreshed before each API request and flushed before each response. Seeds initial accounts on first boot (`server/seed.js`).
 - Frontend `src/`: React 19 + React Router. Design world "Clinical Label" (UI-Lab niche world 18): Atkinson Hyperlegible, white/ink, teal brand, status = icon + word + colour. Text-size and dark-mode toggles, skip link, focus moved to h1 on navigation, 44px targets.
 
 ## Why the Wi-Fi check changed
@@ -30,7 +30,7 @@ Patients do not choose their doctors. The security officer (hospital administrat
 ## UI structure
 `AppShell` in `src/ui.jsx`: sidebar on screens 1024px and wider, top bar plus bottom tabs below that. Public pages use `TopBar`, which shows My dashboard and Sign out when signed in. The landing hero uses the real `label-card` and `AccessLedger` components with sample data.
 
-## Roles and demo accounts (password `HealthGuard2026`)
+## Roles and initial accounts (passwords: `SEED_PASSWORDS` secret on Vercel, held by Harsh; the local dev fallback is in seed.js)
 - Patient: rohan@, ananya@, farhan@, meera@healthguard.demo
 - Doctor: arjun.mehta@, kavya.iyer@healthguard.demo
 - Security officer (admin): security@healthguard.demo
@@ -47,7 +47,7 @@ Vercel (see the next section). Render config was removed.
 
 ## Vercel deployment (current)
 - `vercel.json`: Vite static build to `dist`; `api/index.js` exports the Express app as one function; `/api/*` is rewritten to it and other paths to `index.html`.
-- Data lives in `/tmp/healthguard` per function instance, so it resets on cold start and is not shared between instances. Demo accounts use stable ids, so sessions stay valid across instances. Runtime changes (new records, consents) can vanish. A real deployment needs a shared database.
+- Data is shared across instances through Vercel Blob (since 2026-10-21; it was per-instance `/tmp` before, which lost created accounts). Concurrent writes are last-write-wins, which is acceptable at prototype traffic. Supabase was not used because the free 2-project limit was reached.`n- Trusted networks: `HOSPITAL_NETWORKS` env (`cidr=Label`, comma-separated). LHBC_Students egress addresses: 103.68.38.66, 122.15.132.69, 202.71.156.66 (the campus spreads traffic across several links). Cloudflare WARP must be off.
 - The client address comes from the `x-real-ip` header set by Vercel's edge.
 - Environment variables in the Vercel project: `MASTER_KEY`, `HOSPITAL_ENROLL_CODE`, `DOCTOR_REGISTRATION_CODE`, `NODE_ENV=production` (build tools are regular dependencies, so the build still has Vite).
 
@@ -60,5 +60,5 @@ Vercel (see the next section). Render config was removed.
 ## Log
 - 2026-10-21: Premium visual layer (v3 block at the end of styles.css): Fraunces display headings, warm ivory canvas, evergreen and brass, dark sidebar, dark landing hero, entrance motion.
 - 2026-10-21: Care teams assigned by hospital, patient reporting, app shell redesign, 78-check suite, fixed malformed-JSON 500 and public top bar showing Sign in while signed in.
-- 2026-10-21: Deployed to Vercel (serverless API, stable demo ids).
+- 2026-10-21: Shared Blob store, per-account seed passwords via secret, demo panel removed, LHBC networks trusted.`n- 2026-10-21: Deployed to Vercel (serverless API, stable ids).
 - 2026-10-21: v2 rebuild. Security core, explainable model, patient/clinic/security UIs, deploy.

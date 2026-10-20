@@ -50,7 +50,7 @@ export default function Landing() {
                 <span><ScrollText size={16} aria-hidden="true" />Tamper-evident ledger</span>
                 <span><Wifi size={16} aria-hidden="true" />Hospital-network gate</span>
               </div>
-              <p className="small muted" style={{ marginTop: 14 }}>Demo system with fictional patients. Not for real medical use.</p>
+              <p className="small muted" style={{ marginTop: 14 }}>Research prototype with fictional patients. Not a medical device.</p>
             </div>
 
             <div className="hero-stage" aria-label="Example of a risk check explanation and an access history">
@@ -86,7 +86,7 @@ export default function Landing() {
         <section className="container" aria-labelledby="tech-title" style={{ paddingBlock: '88px 72px' }}>
           <div className="section-head">
             <h2 id="tech-title">Seven layers between a record and the wrong person</h2>
-            <p>Each one is running in this demo. <Link to="/how-it-works">See the risk model</Link></p>
+            <p>Each one is running in this system. <Link to="/how-it-works">See the risk model</Link></p>
           </div>
           <div className="spec">
             {TECHNIQUES.map(({ icon: Icon, title, text, tag }) => (
@@ -125,7 +125,7 @@ export default function Landing() {
           </div>
         </section>
       </main>
-      <footer className="footer"><div className="container spread"><span>HealthGuard · Secure and explainable health records</span><span>Demo system. Not for real medical use.</span></div></footer>
+      <footer className="footer"><div className="container spread"><span>HealthGuard · Secure and explainable health records</span><span>Research prototype. Not a medical device.</span></div></footer>
     </div>
   );
 }

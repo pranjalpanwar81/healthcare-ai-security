@@ -4,7 +4,16 @@ import { seal, blindIndex, hashPassword, randomId } from './lib/crypto.js';
 import { record } from './lib/audit.js';
 import { explain } from './lib/xai.js';
 
-export const DEMO_PASSWORD = 'HealthGuard2026';
+// Passwords come from SEED_PASSWORDS (JSON: { email: password }), kept in deployment secrets.
+// The development fallback is only used when no secret is configured and NODE_ENV is not production.
+const DEV_PASSWORD = 'HealthGuard2026';
+function passwordFor(email) {
+  let map = {};
+  try { map = JSON.parse(process.env.SEED_PASSWORDS || '{}'); } catch { map = {}; }
+  if (map[email]) return map[email];
+  if (process.env.NODE_ENV?.trim() === 'production' || process.env.VERCEL) throw new Error(`SEED_PASSWORDS has no entry for ${email}`);
+  return DEV_PASSWORD;
+}
 
 const people = [
   { role: 'admin', name: 'Neha Kulkarni', email: 'security@healthguard.demo', specialty: 'Information Security Officer' },
@@ -47,7 +56,7 @@ export function seedDemo() {
     // Stable ids derived from the email, so every server instance seeds the same accounts.
     const id = `${p.role === 'patient' ? 'pat' : p.role === 'doctor' ? 'doc' : 'adm'}_${blindIndex(p.email).slice(0, 12)}`;
     const u = {
-      id, role: p.role, name: p.name, emailIndex: blindIndex(p.email), passwordHash: hashPassword(DEMO_PASSWORD),
+      id, role: p.role, name: p.name, emailIndex: blindIndex(p.email), passwordHash: hashPassword(passwordFor(p.email)),
       specialty: p.specialty, pii: seal({ email: p.email, phone: '', dob: '', gender: '', bloodGroup: '', allergies: '', ...(p.profile || {}) }, id),
       createdAt: days(365), failedLogins: 0, lockedUntil: null, demo: true,
     };
@@ -90,5 +99,5 @@ export function seedDemo() {
     record({ actor: doctor, action: 'record.read', patientId: p.id, ip, detail: { basis: 'consent' } });
   }
   record({ actor: doctors[0], action: 'record.write', patientId: byEmail['ananya@healthguard.demo'].id, ip, detail: { basis: 'consent' } });
-  console.log(`[seed] Demo data created. Password for all demo accounts: ${DEMO_PASSWORD}`);
+  console.log('[seed] Initial accounts created.');
 }

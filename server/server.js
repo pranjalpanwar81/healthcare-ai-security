@@ -21,13 +21,40 @@ const SESSION_MINUTES = { patient: 120, doctor: 30, admin: 30 };
 const COOKIE = 'hg_session';
 
 store.load();
-restoreKekVersion(store.data().meta.kekVersion || 1);
 startMonitoring();
-if (store.isEmpty()) seedDemo();
+if (!store.usesSharedStore()) {
+  restoreKekVersion(store.data().meta.kekVersion || 1);
+  if (store.isEmpty()) seedDemo();
+}
 
 const app = express();
 app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 app.disable('x-powered-by');
+
+// Shared store (Vercel Blob): load the latest copy before each API request and write
+// any changes back before the response leaves, because the function may freeze afterwards.
+app.use('/api', async (req, res, next) => {
+  if (!store.usesSharedStore()) return next();
+  try {
+    await store.refresh();
+    if (store.isEmpty()) seedDemo();
+    restoreKekVersion(store.data().meta.kekVersion || 1);
+  } catch (err) {
+    console.error('[store] refresh failed', err);
+    return res.status(503).json({ error: 'The service is briefly unavailable. Please try again.' });
+  }
+  const send = res.json.bind(res);
+  res.json = (body) => {
+    store.flush().then(() => send(body), (err) => {
+      console.error('[store] flush failed', err);
+      res.status(503);
+      send({ error: 'Your change could not be saved. Please try again.' });
+    });
+    return res;
+  };
+  return next();
+});
+
 app.use(express.json({ limit: '100kb' }));
 
 // Security headers.

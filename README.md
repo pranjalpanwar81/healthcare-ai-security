@@ -37,7 +37,7 @@ Decision support only. The model uses synthetic data and is not a medical device
 - **Clinician**: assigned patient list, chart, add encrypted records, explained risk check, emergency access, personal alerts. Hospital network required.
 - **Security officer**: care-team assignment, ledger verification and tamper simulation, key rotation, alert review, trusted networks, raw ledger. Hospital network required.
 
-Demo accounts (password `HealthGuard2026`): `rohan@healthguard.demo` (patient), `arjun.mehta@healthguard.demo` (doctor), `security@healthguard.demo` (security officer). More are listed on the sign-in page.
+Initial accounts are created on first start. Their passwords come from the `SEED_PASSWORDS` secret (JSON map of email to password) and are never stored in the repository. Local development falls back to a development password.
 
 ## Run locally
 
