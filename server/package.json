@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test-network.js"
+    "test": "node test-security.js"
   },
   "dependencies": {
     "@langchain/anthropic": "^1.5.12",
@@ -24,3 +24,4 @@
     "langchain": "^1.5.16"
   }
 }
+

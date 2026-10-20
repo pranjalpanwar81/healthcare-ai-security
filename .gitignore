@@ -42,3 +42,7 @@ data/
 .env
 .env.local
 .env.*.local
+
+# Local tooling
+.claude/
+

@@ -1,1095 +1,495 @@
+// HealthGuard API: secure electronic health records with explainable risk assessment.
+import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import ip from 'ip';
 import jwt from 'jsonwebtoken';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
-import langchainService from './langchainService.js';
+import * as store from './lib/store.js';
+import * as audit from './lib/audit.js';
+import { seal, open, rewrap, rotateKek, activeKekVersion, restoreKekVersion, blindIndex, hashPassword, verifyPassword, randomId, jwtSecret } from './lib/crypto.js';
+import { checkNetwork, enrollNetwork, trustedNetworks, removeNetwork } from './lib/network.js';
+import { explain, modelCard, FEATURES } from './lib/xai.js';
+import { startMonitoring } from './lib/anomaly.js';
+import { seedDemo } from './seed.js';
 
-dotenv.config();
+const PORT = Number(process.env.PORT || 3001);
+const PROD = process.env.NODE_ENV === 'production';
+const ENROLL_CODE = process.env.HOSPITAL_ENROLL_CODE || (PROD ? null : 'HOSPITAL-IT-2026');
+const DOCTOR_CODE = process.env.DOCTOR_REGISTRATION_CODE || (PROD ? null : 'DOCTOR-2026');
+const SESSION_MINUTES = { patient: 120, doctor: 30, admin: 30 };
+const COOKIE = 'hg_session';
+
+store.load();
+restoreKekVersion(store.data().meta.kekVersion || 1);
+startMonitoring();
+if (store.isEmpty()) seedDemo();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
-const HOST = process.env.HOST || '0.0.0.0';
-const LOCAL_ML_API_URL = (process.env.LOCAL_ML_API_URL || 'http://127.0.0.1:5001').replace(/\/+$/, '');
-const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
-const localStorePath = path.join(serverDirectory, 'data', 'local-demo-store.json');
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
+app.disable('x-powered-by');
+app.use(express.json({ limit: '100kb' }));
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Security headers.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
+  if (PROD) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  if (req.path.startsWith('/api/')) res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
-// Configuration
-const ALLOWED_NETWORKS = process.env.ALLOWED_NETWORKS ? process.env.ALLOWED_NETWORKS.split(',') : ['192.168.1.0/24', '10.0.0.0/8'];
-const ALLOWED_SSIDS = process.env.ALLOWED_SSIDS ? process.env.ALLOWED_SSIDS.split(',') : ['Hospital-WiFi', 'HealthGuard-Network'];
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+// Simple fixed-window rate limiter.
+const buckets = new Map();
+const limit = (name, max, windowMs) => (req, res, next) => {
+  const key = `${name}:${req.ip}`;
+  const now = Date.now();
+  const b = buckets.get(key);
+  if (!b || now - b.start > windowMs) { buckets.set(key, { start: now, count: 1 }); return next(); }
+  b.count += 1;
+  if (b.count > max) {
+    res.setHeader('Retry-After', Math.ceil((b.start + windowMs - now) / 1000));
+    return res.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' });
+  }
+  return next();
+};
+app.use('/api/', limit('api', 300, 60 * 1000));
 
-// Firebase Admin SDK for real-time sync
-let db;
-try {
-  const serviceAccount = {
-    type: process.env.FIREBASE_TYPE || 'service_account',
-    project_id: process.env.FIREBASE_PROJECT_ID || 'heathguard-ai',
-    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-    private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    client_email: process.env.FIREBASE_CLIENT_EMAIL,
-    client_id: process.env.FIREBASE_CLIENT_ID,
-    auth_uri: process.env.FIREBASE_AUTH_URI || 'https://accounts.google.com/o/oauth2/auth',
-    token_uri: process.env.FIREBASE_TOKEN_URI || 'https://oauth2.googleapis.com/token',
-    auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
-    client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL
-  };
+const db = store.data;
+const ipOf = (req) => req.ip;
+const findUser = (id) => db().users.find((u) => u.id === id);
+const publicUser = (u) => {
+  const pii = open(u.pii, u.id);
+  return { id: u.id, role: u.role, name: u.name, email: pii.email, specialty: u.specialty ?? null, profile: u.role === 'patient' ? pii : undefined };
+};
+const fail = (res, status, error, extra = {}) => res.status(status).json({ error, ...extra });
 
-  const firebaseConfig = {
-    credential: cert(serviceAccount)
-  };
-
-  const firebaseApp = initializeApp(firebaseConfig);
-  db = getFirestore(firebaseApp);
-  console.log('✅ Firebase Firestore connected for real-time sync');
-} catch (error) {
-  console.log('⚠️  Firebase not configured, using local file-backed demo storage');
-  console.log('   Set FIREBASE credentials in .env for real-time sync');
+function readCookie(req, name) {
+  const header = req.headers.cookie || '';
+  for (const part of header.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
+  }
+  return null;
 }
 
-// Fallback in-memory storage
-const users = new Map();
-const activeSessions = new Map();
-const patientRecords = new Map();
-const deletedDemoPatientIds = new Set();
-const deletedDemoPatientEmails = new Set();
-let localStoreWriteQueue = Promise.resolve();
+function issueSession(res, user) {
+  const minutes = SESSION_MINUTES[user.role];
+  const jti = randomId('ses');
+  const token = jwt.sign({ sub: user.id, role: user.role, jti }, jwtSecret, { algorithm: 'HS256', expiresIn: `${minutes}m`, issuer: 'healthguard' });
+  res.cookie(COOKIE, token, { httpOnly: true, secure: PROD, sameSite: 'strict', maxAge: minutes * 60 * 1000, path: '/' });
+  return { expiresAt: new Date(Date.now() + minutes * 60 * 1000).toISOString() };
+}
 
-async function loadLocalStore() {
-  if (db || process.env.NODE_ENV === 'production') return;
+// Authentication: the session lives in an httpOnly, SameSite=Strict cookie that scripts cannot read.
+function auth(req, res, next) {
+  const token = readCookie(req, COOKIE);
+  if (!token) return fail(res, 401, 'Please sign in.');
   try {
-    const saved = JSON.parse(await readFile(localStorePath, 'utf8'));
-    for (const [email, user] of saved.users || []) {
-      if (email && user && ['doctor', 'patient'].includes(user.role)) users.set(email, user);
-    }
-    for (const [patientId, records] of saved.patientRecords || []) {
-      if (patientId && Array.isArray(records)) patientRecords.set(patientId, records);
-    }
-    for (const patientId of saved.deletedDemoPatientIds || []) {
-      if (patientId) deletedDemoPatientIds.add(patientId);
-    }
-    for (const email of saved.deletedDemoPatientEmails || []) {
-      if (email) deletedDemoPatientEmails.add(email);
-    }
-    console.log(`Loaded ${users.size} local demo accounts and ${patientRecords.size} patient record collections`);
-  } catch (error) {
-    if (error.code !== 'ENOENT') console.error('Unable to load local demo data:', error.message);
+    const claims = jwt.verify(token, jwtSecret, { algorithms: ['HS256'], issuer: 'healthguard' });
+    if (db().revokedTokens.some((t) => t.jti === claims.jti)) return fail(res, 401, 'Your session has ended. Please sign in again.');
+    const user = findUser(claims.sub);
+    if (!user || user.role !== claims.role) return fail(res, 401, 'Please sign in.');
+    req.user = user;
+    req.session = claims;
+    return next();
+  } catch {
+    return fail(res, 401, 'Your session has expired. Please sign in again.');
   }
 }
 
-async function persistLocalStore() {
-  if (db || process.env.NODE_ENV === 'production') return;
-  const snapshot = JSON.stringify({
-    users: [...users.entries()],
-    patientRecords: [...patientRecords.entries()],
-    deletedDemoPatientIds: [...deletedDemoPatientIds],
-    deletedDemoPatientEmails: [...deletedDemoPatientEmails]
+const role = (...roles) => (req, res, next) => {
+  if (!roles.includes(req.user.role)) {
+    audit.record({ actor: req.user, action: 'access.forbidden', target: req.path, outcome: 'denied', ip: ipOf(req) });
+    return fail(res, 403, 'You do not have permission to do that.');
+  }
+  return next();
+};
+
+// Clinical staff must be on a hospital network for every request, not just at sign-in.
+function hospitalNetwork(req, res, next) {
+  const status = checkNetwork(ipOf(req));
+  if (!status.trusted) {
+    audit.record({ actor: req.user, action: 'network.blocked', target: req.path, outcome: 'denied', ip: status.ip });
+    return fail(res, 403, 'Clinical access is only available on the hospital network.', { code: 'NETWORK_REQUIRED', ip: status.ip });
+  }
+  req.network = status;
+  return next();
+}
+
+const clinical = [auth, role('doctor', 'admin'), hospitalNetwork];
+
+// Consent-based access: a doctor may open a chart only with active patient consent or an active emergency override.
+function accessFor(doctorId, patientId) {
+  const now = Date.now();
+  const consent = db().consents.find((c) => c.doctorId === doctorId && c.patientId === patientId
+    && (!c.expiresAt || Date.parse(c.expiresAt) > now));
+  if (consent) return { allowed: true, basis: 'consent', until: consent.expiresAt };
+  const bg = db().breakGlass.find((b) => b.doctorId === doctorId && b.patientId === patientId && Date.parse(b.expiresAt) > now);
+  if (bg) return { allowed: true, basis: 'emergency', until: bg.expiresAt };
+  return { allowed: false };
+}
+
+const requireStr = (v, name, max = 200) => {
+  if (typeof v !== 'string' || !v.trim()) throw new Error(`${name} is required.`);
+  if (v.length > max) throw new Error(`${name} is too long.`);
+  return v.trim();
+};
+const strongPassword = (p) => typeof p === 'string' && p.length >= 10 && /[A-Z]/.test(p) && /[a-z]/.test(p) && /\d/.test(p);
+
+const recordView = (r) => ({ id: r.id, createdAt: r.createdAt, authorName: r.authorName, ...open(r.sealed, r.patientId) });
+const patientRecords = (patientId) => db().records.filter((r) => r.patientId === patientId)
+  .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(recordView);
+const latestVitals = (records) => records.find((r) => r.vitals && Object.keys(r.vitals).length)?.vitals ?? null;
+
+// ---------- Public ----------
+app.get('/api/health', (req, res) => res.json({ ok: true, ledgerEntries: db().audit.length }));
+
+app.get('/api/network/status', (req, res) => {
+  const s = checkNetwork(ipOf(req));
+  res.json({ ip: s.ip, trusted: s.trusted, network: s.network });
+});
+
+app.post('/api/network/enroll', limit('enroll', 5, 15 * 60 * 1000), (req, res) => {
+  const { code, label } = req.body || {};
+  if (!ENROLL_CODE || typeof code !== 'string' || code !== ENROLL_CODE) {
+    audit.record({ action: 'network.enroll', outcome: 'denied', ip: ipOf(req), detail: { reason: 'bad code' } });
+    return fail(res, 403, 'That enrolment code is not valid. Ask hospital IT for the current code.');
+  }
+  const cidr = enrollNetwork(ipOf(req), typeof label === 'string' ? label.slice(0, 60) : 'Hospital Wi-Fi');
+  audit.record({ action: 'network.enroll', target: cidr, outcome: 'success', ip: ipOf(req) });
+  return res.json({ ok: true, cidr });
+});
+
+app.get('/api/xai/model-card', (req, res) => res.json({ ...modelCard(), features: FEATURES }));
+
+// Public sandbox: explains sample readings. Nothing is stored and no identity is attached.
+app.post('/api/xai/try', limit('xai-try', 30, 60 * 1000), (req, res) => res.json(explain(req.body?.vitals || {})));
+
+// ---------- Auth ----------
+app.post('/api/auth/register', limit('register', 10, 60 * 60 * 1000), (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = requireStr(b.name, 'Name', 80);
+    const email = requireStr(b.email, 'Email', 120).toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Please enter a valid email address.');
+    if (!strongPassword(b.password)) throw new Error('Password needs at least 10 characters, with upper and lower case letters and a number.');
+    const wantRole = b.role === 'doctor' ? 'doctor' : 'patient';
+    if (wantRole === 'doctor') {
+      if (!DOCTOR_CODE || b.registrationCode !== DOCTOR_CODE) throw new Error('A valid hospital registration code is required for clinician accounts.');
+      if (!checkNetwork(ipOf(req)).trusted) return fail(res, 403, 'Clinician accounts can only be created on the hospital network.', { code: 'NETWORK_REQUIRED' });
+    }
+    const emailIndex = blindIndex(email);
+    if (db().users.some((u) => u.emailIndex === emailIndex)) throw new Error('An account with this email already exists.');
+    const id = randomId(wantRole === 'doctor' ? 'doc' : 'pat');
+    const user = {
+      id, role: wantRole, name, emailIndex, passwordHash: hashPassword(b.password),
+      specialty: wantRole === 'doctor' ? (b.specialty || 'General Medicine').slice(0, 60) : undefined,
+      pii: seal({ email, phone: b.phone || '', dob: b.dob || '', gender: b.gender || '', bloodGroup: b.bloodGroup || '', allergies: b.allergies || '' }, id),
+      createdAt: new Date().toISOString(), failedLogins: 0, lockedUntil: null,
+    };
+    db().users.push(user);
+    store.save();
+    audit.record({ actor: user, action: 'auth.register', outcome: 'success', ip: ipOf(req) });
+    const session = issueSession(res, user);
+    return res.status(201).json({ user: publicUser(user), ...session });
+  } catch (err) {
+    return fail(res, 400, err.message);
+  }
+});
+
+app.post('/api/auth/login', limit('login', 20, 15 * 60 * 1000), (req, res) => {
+  const { email, password, portal } = req.body || {};
+  if (typeof email !== 'string' || typeof password !== 'string') return fail(res, 400, 'Enter your email and password.');
+  const user = db().users.find((u) => u.emailIndex === blindIndex(email));
+  const generic = 'That email and password do not match.';
+  if (!user) {
+    audit.record({ action: 'auth.login', outcome: 'failed', ip: ipOf(req), detail: { reason: 'unknown account' } });
+    return fail(res, 401, generic);
+  }
+  if (user.lockedUntil && Date.parse(user.lockedUntil) > Date.now()) {
+    audit.record({ actor: user, action: 'auth.login', outcome: 'denied', ip: ipOf(req), detail: { reason: 'locked' } });
+    return fail(res, 423, 'This account is locked for 15 minutes after several wrong passwords.');
+  }
+  if (!verifyPassword(password, user.passwordHash)) {
+    user.failedLogins = (user.failedLogins || 0) + 1;
+    if (user.failedLogins >= 5) { user.lockedUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString(); user.failedLogins = 0; }
+    store.save();
+    audit.record({ actor: user, action: 'auth.login', outcome: 'failed', ip: ipOf(req), detail: { reason: 'wrong password' } });
+    return fail(res, 401, generic);
+  }
+  const portalRole = portal === 'clinician' ? ['doctor', 'admin'] : ['patient'];
+  if (portal && !portalRole.includes(user.role)) {
+    return fail(res, 403, user.role === 'patient' ? 'This is a patient account. Please use the patient sign-in.' : 'This is a clinician account. Please use the clinician sign-in.');
+  }
+  if (user.role !== 'patient') {
+    const net = checkNetwork(ipOf(req));
+    if (!net.trusted) {
+      audit.record({ actor: user, action: 'auth.login', outcome: 'denied', ip: net.ip, detail: { reason: 'network' } });
+      return fail(res, 403, 'Clinicians can only sign in from the hospital network.', { code: 'NETWORK_REQUIRED', ip: net.ip });
+    }
+  }
+  user.failedLogins = 0;
+  user.lockedUntil = null;
+  user.lastLoginAt = new Date().toISOString();
+  store.save();
+  audit.record({ actor: user, action: 'auth.login', outcome: 'success', ip: ipOf(req) });
+  const session = issueSession(res, user);
+  return res.json({ user: publicUser(user), ...session });
+});
+
+app.post('/api/auth/logout', auth, (req, res) => {
+  db().revokedTokens.push({ jti: req.session.jti, exp: req.session.exp });
+  const now = Date.now() / 1000;
+  db().revokedTokens = db().revokedTokens.filter((t) => t.exp > now);
+  store.save();
+  audit.record({ actor: req.user, action: 'auth.logout', ip: ipOf(req) });
+  res.clearCookie(COOKIE, { path: '/' });
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', auth, (req, res) => {
+  const net = checkNetwork(ipOf(req));
+  res.json({ user: publicUser(req.user), network: net, expiresAt: new Date(req.session.exp * 1000).toISOString() });
+});
+
+// ---------- Explainable assessment (any signed-in user) ----------
+app.post('/api/xai/explain', auth, (req, res) => {
+  const result = explain(req.body?.vitals || {});
+  audit.record({ actor: req.user, action: 'xai.explain', patientId: req.user.role === 'patient' ? req.user.id : null, outcome: 'success', ip: ipOf(req), detail: { result: result.prediction.key } });
+  res.json(result);
+});
+
+// ---------- Patient ----------
+const patientOnly = [auth, role('patient')];
+
+app.get('/api/patient/records', patientOnly, (req, res) => {
+  const records = patientRecords(req.user.id);
+  audit.record({ actor: req.user, action: 'record.read.self', patientId: req.user.id, ip: ipOf(req) });
+  res.json({ records, latestVitals: latestVitals(records) });
+});
+
+app.get('/api/patient/explanation', patientOnly, (req, res) => {
+  const vitals = latestVitals(patientRecords(req.user.id));
+  if (!vitals) return res.json({ available: false });
+  return res.json({ available: true, vitals, ...explain(vitals) });
+});
+
+app.get('/api/patient/access-log', patientOnly, (req, res) => {
+  const entries = db().audit.filter((e) => e.patientId === req.user.id && e.actorId !== req.user.id)
+    .slice(-200).reverse()
+    .map((e) => ({ seq: e.seq, ts: e.ts, who: e.actorName || 'System', role: e.actorRole, action: e.action, outcome: e.outcome, detail: e.detail, hash: e.hash }));
+  res.json({ entries, integrity: audit.verify() });
+});
+
+app.get('/api/doctors', auth, (req, res) => {
+  res.json({ doctors: db().users.filter((u) => u.role === 'doctor').map((u) => ({ id: u.id, name: u.name, specialty: u.specialty })) });
+});
+
+app.get('/api/patient/consents', patientOnly, (req, res) => {
+  const now = Date.now();
+  const consents = db().consents.filter((c) => c.patientId === req.user.id && (!c.expiresAt || Date.parse(c.expiresAt) > now))
+    .map((c) => ({ ...c, doctorName: findUser(c.doctorId)?.name, specialty: findUser(c.doctorId)?.specialty }));
+  const emergencies = db().breakGlass.filter((b) => b.patientId === req.user.id).slice(-20).reverse()
+    .map((b) => ({ ...b, doctorName: findUser(b.doctorId)?.name, active: Date.parse(b.expiresAt) > now }));
+  res.json({ consents, emergencies });
+});
+
+app.post('/api/patient/consents', patientOnly, (req, res) => {
+  const { doctorId, days } = req.body || {};
+  const doctor = findUser(doctorId);
+  if (!doctor || doctor.role !== 'doctor') return fail(res, 404, 'Doctor not found.');
+  const d = Number(days);
+  const expiresAt = Number.isFinite(d) && d > 0 ? new Date(Date.now() + Math.min(d, 365) * 86400000).toISOString() : null;
+  db().consents = db().consents.filter((c) => !(c.patientId === req.user.id && c.doctorId === doctorId));
+  db().consents.push({ patientId: req.user.id, doctorId, grantedAt: new Date().toISOString(), expiresAt });
+  store.save();
+  audit.record({ actor: req.user, action: 'consent.grant', patientId: req.user.id, target: doctorId, ip: ipOf(req), detail: { doctor: doctor.name, expiresAt } });
+  res.json({ ok: true });
+});
+
+app.delete('/api/patient/consents/:doctorId', patientOnly, (req, res) => {
+  const before = db().consents.length;
+  db().consents = db().consents.filter((c) => !(c.patientId === req.user.id && c.doctorId === req.params.doctorId));
+  store.save();
+  audit.record({ actor: req.user, action: 'consent.revoke', patientId: req.user.id, target: req.params.doctorId, ip: ipOf(req), detail: { doctor: findUser(req.params.doctorId)?.name } });
+  res.json({ ok: true, removed: before - db().consents.length });
+});
+
+// ---------- Doctor ----------
+app.get('/api/doctor/patients', clinical, role('doctor'), (req, res) => {
+  const ids = new Set();
+  const now = Date.now();
+  db().consents.forEach((c) => { if (c.doctorId === req.user.id && (!c.expiresAt || Date.parse(c.expiresAt) > now)) ids.add(c.patientId); });
+  db().breakGlass.forEach((b) => { if (b.doctorId === req.user.id && Date.parse(b.expiresAt) > now) ids.add(b.patientId); });
+  const patients = [...ids].map(findUser).filter(Boolean).map((p) => {
+    const records = db().records.filter((r) => r.patientId === p.id);
+    const last = records.map((r) => r.createdAt).sort().pop() || null;
+    return { id: p.id, name: p.name, access: accessFor(req.user.id, p.id), recordCount: records.length, lastVisit: last };
   });
-  localStoreWriteQueue = localStoreWriteQueue.then(async () => {
-    await mkdir(path.dirname(localStorePath), { recursive: true, mode: 0o700 });
-    const tempPath = `${localStorePath}.${process.pid}.tmp`;
-    await writeFile(tempPath, snapshot, { encoding: 'utf8', mode: 0o600 });
-    await chmod(tempPath, 0o600);
-    await rename(tempPath, localStorePath);
-  }).catch(error => {
-    console.error('Unable to persist local demo data:', error.message);
-  });
-  await localStoreWriteQueue;
-}
+  res.json({ patients, network: req.network });
+});
 
-// TCP/IP Validation Helper
-function isIPInCIDR(ipAddress, cidr) {
-  const [network, maskLength] = cidr.split('/');
-  const mask = parseInt(maskLength, 10);
-  const ipInt = ip.toLong(ipAddress);
-  const networkInt = ip.toLong(network);
-  const maskInt = ~((1 << (32 - mask)) - 1);
-  return (ipInt & maskInt) === (networkInt & maskInt);
-}
+app.get('/api/doctor/search', clinical, role('doctor'), (req, res) => {
+  const q = String(req.query.email || '');
+  const p = db().users.find((u) => u.role === 'patient' && u.emailIndex === blindIndex(q));
+  audit.record({ actor: req.user, action: 'patient.search', outcome: p ? 'success' : 'not-found', ip: ipOf(req), patientId: p?.id ?? null });
+  if (!p) return res.json({ found: false });
+  return res.json({ found: true, patient: { id: p.id, name: p.name }, access: accessFor(req.user.id, p.id) });
+});
 
-function validateNetwork(clientIP) {
-  return ALLOWED_NETWORKS.some(cidr => isIPInCIDR(clientIP, cidr));
-}
+app.get('/api/doctor/patients/:id', clinical, role('doctor'), (req, res) => {
+  const p = findUser(req.params.id);
+  if (!p || p.role !== 'patient') return fail(res, 404, 'Patient not found.');
+  const access = accessFor(req.user.id, p.id);
+  if (!access.allowed) {
+    audit.record({ actor: req.user, action: 'record.read', patientId: p.id, outcome: 'denied', ip: ipOf(req), detail: { reason: 'no consent' } });
+    return fail(res, 403, 'This patient has not shared their records with you.', { code: 'CONSENT_REQUIRED' });
+  }
+  const records = patientRecords(p.id);
+  audit.record({ actor: req.user, action: 'record.read', patientId: p.id, ip: ipOf(req), detail: { basis: access.basis } });
+  return res.json({ patient: publicUser(p), access, records, latestVitals: latestVitals(records) });
+});
 
-// Generate JWT Token
-function generateToken(user) {
-  return jwt.sign(
-    {
-      id: user.id,
-      role: user.role,
-      network: user.network,
-      ssid: user.ssid
+app.post('/api/doctor/patients/:id/records', clinical, role('doctor'), (req, res) => {
+  const p = findUser(req.params.id);
+  if (!p || p.role !== 'patient') return fail(res, 404, 'Patient not found.');
+  const access = accessFor(req.user.id, p.id);
+  if (!access.allowed) {
+    audit.record({ actor: req.user, action: 'record.write', patientId: p.id, outcome: 'denied', ip: ipOf(req) });
+    return fail(res, 403, 'This patient has not shared their records with you.', { code: 'CONSENT_REQUIRED' });
+  }
+  try {
+    const b = req.body || {};
+    const vitals = {};
+    for (const f of FEATURES) {
+      const v = Number(b.vitals?.[f.key]);
+      if (b.vitals?.[f.key] !== '' && b.vitals?.[f.key] != null && Number.isFinite(v)) vitals[f.key] = v;
+    }
+    const body = {
+      title: requireStr(b.title, 'Visit title', 120),
+      type: ['visit', 'lab', 'prescription', 'note'].includes(b.type) ? b.type : 'visit',
+      diagnosis: String(b.diagnosis || '').slice(0, 300),
+      notes: String(b.notes || '').slice(0, 4000),
+      medications: Array.isArray(b.medications) ? b.medications.map((m) => String(m).slice(0, 120)).slice(0, 20) : [],
+      vitals,
+      assessment: Object.keys(vitals).length ? explain(vitals).prediction : null,
+    };
+    const rec = { id: randomId('rec'), patientId: p.id, authorId: req.user.id, authorName: req.user.name, createdAt: new Date().toISOString(), sealed: seal(body, p.id) };
+    db().records.push(rec);
+    store.save();
+    audit.record({ actor: req.user, action: 'record.write', patientId: p.id, target: rec.id, ip: ipOf(req), detail: { basis: access.basis } });
+    return res.status(201).json({ record: recordView(rec) });
+  } catch (err) {
+    return fail(res, 400, err.message);
+  }
+});
+
+app.post('/api/doctor/patients/:id/explain', clinical, role('doctor'), (req, res) => {
+  const p = findUser(req.params.id);
+  if (!p || !accessFor(req.user.id, p.id).allowed) return fail(res, 403, 'No access to this patient.');
+  const result = explain(req.body?.vitals || {});
+  audit.record({ actor: req.user, action: 'xai.explain', patientId: p.id, ip: ipOf(req), detail: { result: result.prediction.key } });
+  return res.json(result);
+});
+
+app.post('/api/doctor/break-glass', clinical, role('doctor'), (req, res) => {
+  const { patientId, reason } = req.body || {};
+  const p = findUser(patientId);
+  if (!p || p.role !== 'patient') return fail(res, 404, 'Patient not found.');
+  if (typeof reason !== 'string' || reason.trim().length < 15) return fail(res, 400, 'Describe the emergency in at least 15 characters. This is reviewed.');
+  const entry = { id: randomId('bg'), doctorId: req.user.id, patientId: p.id, reason: reason.trim().slice(0, 300), startedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString() };
+  db().breakGlass.push(entry);
+  store.save();
+  audit.record({ actor: req.user, action: 'breakglass.start', patientId: p.id, outcome: 'success', ip: ipOf(req), detail: { reason: entry.reason } });
+  return res.status(201).json({ ok: true, expiresAt: entry.expiresAt });
+});
+
+app.get('/api/doctor/alerts', clinical, (req, res) => {
+  res.json({ alerts: db().alerts.filter((a) => a.actorId === req.user.id).slice(0, 50) });
+});
+
+// ---------- Security officer ----------
+const adminOnly = [...clinical, role('admin')];
+
+app.get('/api/admin/overview', adminOnly, (req, res) => {
+  const d = db();
+  res.json({
+    counts: {
+      patients: d.users.filter((u) => u.role === 'patient').length,
+      doctors: d.users.filter((u) => u.role === 'doctor').length,
+      records: d.records.length,
+      ledger: d.audit.length,
+      openAlerts: d.alerts.filter((a) => a.status === 'open').length,
+      activeEmergencies: d.breakGlass.filter((b) => Date.parse(b.expiresAt) > Date.now()).length,
     },
-    JWT_SECRET,
-    { expiresIn: '1h' }
-  );
-}
-
-// Verify JWT Token
-function verifyToken(token) {
-  try {
-    return jwt.verify(token, JWT_SECRET);
-  } catch (error) {
-    return null;
-  }
-}
-
-// Network Validation Middleware
-const validateNetworkAccess = (req, res, next) => {
-  const clientIP = req.ip || req.connection.remoteAddress;
-  const ssid = req.headers['x-wifi-ssid'];
-
-  console.log(`Access attempt from IP: ${clientIP}, SSID: ${ssid}`);
-
-  // For doctor role, require network validation
-  if (req.user && req.user.role === 'doctor') {
-    if (process.env.NODE_ENV === 'production' && !validateNetwork(clientIP)) {
-      return res.status(403).json({
-        error: 'Network access denied',
-        message: 'Doctors must access from the hospital network'
-      });
-    }
-
-    if (ssid && !ALLOWED_SSIDS.includes(ssid)) {
-      return res.status(403).json({
-        error: 'Wi-Fi network invalid',
-        message: 'Doctors must connect to hospital Wi-Fi'
-      });
-    }
-  }
-
-  next();
-};
-
-// Firestore Helper Functions
-async function getUserFromFirestore(email) {
-  if (!db) return null;
-  try {
-    const snapshot = await db.collection('users').where('email', '==', email).get();
-    if (snapshot.empty) return null;
-    const doc = snapshot.docs[0];
-    return { id: doc.id, ...doc.data() };
-  } catch (error) {
-    console.error('Firestore error:', error);
-    return null;
-  }
-}
-
-async function updateUserInFirestore(id, updates) {
-  if (!db) return null;
-  try {
-    let ref = db.collection('users').doc(id);
-    let snapshot = await ref.get();
-    if (!snapshot.exists) {
-      const legacySnapshot = await db.collection('users').where('id', '==', id).limit(1).get();
-      if (legacySnapshot.empty) return null;
-      ref = legacySnapshot.docs[0].ref;
-    }
-    await ref.update(updates);
-    snapshot = await ref.get();
-    return snapshot.exists ? { ...snapshot.data(), id: snapshot.data().id || snapshot.id } : null;
-  } catch (error) {
-    console.error('Firestore error:', error);
-    return null;
-  }
-}
-
-async function getUserById(id) {
-  if (!db) return Array.from(users.values()).find(user => user.id === id) || null;
-  try {
-    const snapshot = await db.collection('users').doc(id).get();
-    if (snapshot.exists) return { ...snapshot.data(), id: snapshot.data().id || snapshot.id };
-    const legacySnapshot = await db.collection('users').where('id', '==', id).limit(1).get();
-    if (legacySnapshot.empty) return null;
-    const doc = legacySnapshot.docs[0];
-    return { ...doc.data(), id: doc.data().id || doc.id };
-  } catch (error) {
-    console.error('Firestore error:', error);
-    return null;
-  }
-}
-
-async function saveUserToFirestore(user) {
-  if (!db) return null;
-  try {
-    await db.collection('users').doc(user.id).set(user);
-    return user;
-  } catch (error) {
-    console.error('Firestore error:', error);
-    return null;
-  }
-}
-
-async function updatePatientRecord(patientId, recordData) {
-  if (!db) return null;
-  try {
-    const patientRef = db.collection('patients').doc(patientId);
-    const patientDoc = await patientRef.get();
-
-    if (!patientDoc.exists) {
-      // Create new patient document
-      await patientRef.set({
-        records: [recordData],
-        updatedAt: new Date().toISOString()
-      });
-    } else {
-      // Append to existing records
-      const patientData = patientDoc.data();
-      const records = patientData.records || [];
-      records.push(recordData);
-      await patientRef.update({
-        records,
-        updatedAt: new Date().toISOString()
-      });
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Firestore error:', error);
-    return { success: false, error: error.message };
-  }
-}
-
-async function getPatientRecords(patientId) {
-  if (!db) return patientRecords.get(patientId) || [];
-  try {
-    const doc = await db.collection('patients').doc(patientId).get();
-    if (!doc.exists) return [];
-    const data = doc.data();
-    return data.records || [];
-  } catch (error) {
-    console.error('Firestore error:', error);
-    return [];
-  }
-}
-
-function publicPatientProfile(user) {
-  if (!user) return null;
-  const fields = ['id', 'name', 'email', 'phone', 'dateOfBirth', 'address', 'bloodType', 'allergies', 'emergencyContact', 'insuranceProvider', 'insuranceNumber', 'createdAt'];
-  return Object.fromEntries(fields.filter(field => user[field] !== undefined).map(field => [field, user[field]]));
-}
-
-// Auth Middleware
-const authenticateToken = async (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
-  }
-
-  const decoded = verifyToken(token);
-  if (!decoded) {
-    return res.status(403).json({ error: 'Invalid or expired token' });
-  }
-
-  const user = await getUserById(decoded.id);
-  if (!user || user.role !== decoded.role) {
-    return res.status(401).json({ error: 'This account is no longer available. Please sign in again.' });
-  }
-
-  req.user = decoded;
-  next();
-};
-
-// Routes
-
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Network validation endpoint
-app.post('/api/validate-network', (req, res) => {
-  const { ssid, location } = req.body;
-  const clientIP = req.ip || req.connection.remoteAddress;
-
-  const networkValid = validateNetwork(clientIP);
-  const ssidValid = ssid && ALLOWED_SSIDS.includes(ssid);
-  const locationValid = true;
-
-  res.json({
-    networkValid,
-    ssidValid,
-    locationValid,
-    patientLocationRequired: false,
-    clientIP,
-    allowedNetworks: ALLOWED_NETWORKS,
-    allowedSSIDs: ALLOWED_SSIDS
+    integrity: audit.verify(),
+    alerts: d.alerts.slice(0, 50),
+    networks: trustedNetworks(),
+    you: req.network,
+    encryption: { algorithm: 'AES-256-GCM envelope encryption', activeKeyVersion: activeKekVersion(), sealedRecords: d.records.length, sealedProfiles: d.users.length },
   });
 });
 
-// Register user
-app.post('/api/auth/register', async (req, res) => {
-  const { email, password, role, name, ssid, location } = req.body;
-
-  if (!email || !password || !role) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
-  if (!['doctor', 'patient'].includes(role)) {
-    return res.status(400).json({ error: 'Invalid role' });
-  }
-
-  // Check if user exists in Firestore or memory
-  const normalizedEmail = email.trim().toLowerCase();
-  const existingUser = db ? await getUserFromFirestore(normalizedEmail) : users.get(normalizedEmail);
-  if (existingUser) {
-    if (role === 'patient' && existingUser.role === 'patient' && !existingUser.password) {
-      const claimedUser = { ...existingUser, password, name: name || existingUser.name, ssid, location };
-      if (db) {
-        const savedUser = await updateUserInFirestore(existingUser.id, { password, name: claimedUser.name, ssid, location });
-        if (!savedUser) return res.status(500).json({ error: 'Unable to link this patient account' });
-        return res.json({ message: 'Patient account linked successfully', user: { id: savedUser.id, email: savedUser.email, role: savedUser.role, name: savedUser.name } });
-      }
-      users.set(normalizedEmail, claimedUser);
-      await persistLocalStore();
-      return res.json({ message: 'Patient account linked successfully', user: { id: claimedUser.id, email: claimedUser.email, role: claimedUser.role, name: claimedUser.name } });
-    }
-    return res.status(409).json({ error: 'User already exists' });
-  }
-
-  const user = {
-    id: Date.now().toString(),
-    email: normalizedEmail,
-    password, // In production, hash this!
-    role,
-    name,
-    ssid,
-    location,
-    createdAt: new Date().toISOString()
-  };
-
-  // Save to Firestore if available, otherwise use memory
-  if (db) {
-    const savedUser = await saveUserToFirestore(user);
-    if (savedUser) {
-      if (savedUser.role === 'patient') await seedDemoRecords(savedUser.id, savedUser.email);
-      return res.json({
-        message: 'User registered successfully',
-        user: {
-          id: savedUser.id,
-          email: savedUser.email,
-          role: savedUser.role,
-          name: savedUser.name
-        }
-      });
-    }
-  }
-
-  // Fallback to in-memory
-  users.set(normalizedEmail, user);
-  await persistLocalStore();
-  if (user.role === 'patient') await seedDemoRecords(user.id, user.email);
-
-  res.json({
-    message: 'User registered successfully',
-    user: {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      name: user.name
-    }
-  });
+app.get('/api/admin/audit', adminOnly, (req, res) => {
+  const n = Math.min(Number(req.query.limit) || 100, 500);
+  res.json({ entries: db().audit.slice(-n).reverse() });
 });
 
-async function seedDemoRecords(patientId, email) {
-  if (deletedDemoPatientEmails.has(email)) return;
-  const demoByEmail = {
-    'john.doe@email.com': [
-      { date: '2025-09-15', type: 'Check-up', doctor: 'Dr. Sarah Smith', diagnosis: 'Routine wellness visit', prescription: 'Daily multivitamin', notes: 'Fictional demo entry. Blood pressure 120/80; follow-up in six months.' },
-      { date: '2025-08-20', type: 'Lab Test', doctor: 'Dr. Sarah Smith', diagnosis: 'Routine blood panel', prescription: '', notes: 'Fictional demo entry. Results reviewed with patient.' }
-    ],
-    'sarah.johnson@email.com': [
-      { date: '2025-09-10', type: 'Consultation', doctor: 'Dr. Michael Chen', diagnosis: 'Seasonal allergies', prescription: 'Non-drowsy antihistamine as directed', notes: 'Fictional demo entry. Discussed symptom tracking.' }
-    ],
-    'michael.chen@email.com': [
-      { date: '2025-09-03', type: 'Follow-up', doctor: 'Dr. Emily Davis', diagnosis: 'Routine recovery follow-up', prescription: '', notes: 'Fictional demo entry. Patient reports steady improvement.' }
-    ]
-  };
-  const records = (demoByEmail[email] || []).map((record, index) => ({ ...record, id: `DEMO-${patientId}-${index + 1}`, demo: true }));
-  if (db) {
-    const ref = db.collection('patients').doc(patientId);
-    const snapshot = await ref.get();
-    if (!snapshot.exists) await ref.set({ records, updatedAt: new Date().toISOString() });
-  } else if (!patientRecords.has(patientId)) {
-    patientRecords.set(patientId, records);
-    await persistLocalStore();
-  }
+app.post('/api/admin/audit/verify', adminOnly, (req, res) => {
+  const result = audit.verify();
+  audit.record({ actor: req.user, action: 'ledger.verify', ip: ipOf(req), detail: { valid: result.valid } });
+  res.json(result);
+});
+
+app.post('/api/admin/audit/simulate-tamper', adminOnly, (req, res) => res.json(audit.simulateTamper()));
+
+app.post('/api/admin/alerts/:id/resolve', adminOnly, (req, res) => {
+  const a = db().alerts.find((x) => x.id === req.params.id);
+  if (!a) return fail(res, 404, 'Alert not found.');
+  a.status = 'resolved';
+  a.resolvedBy = req.user.name;
+  a.resolvedAt = new Date().toISOString();
+  store.save();
+  audit.record({ actor: req.user, action: 'alert.resolve', target: a.id, ip: ipOf(req) });
+  return res.json({ ok: true });
+});
+
+app.post('/api/admin/keys/rotate', adminOnly, (req, res) => {
+  const version = rotateKek();
+  const d = db();
+  d.records.forEach((r) => { r.sealed = rewrap(r.sealed, r.patientId); });
+  d.users.forEach((u) => { u.pii = rewrap(u.pii, u.id); });
+  d.meta.kekVersion = version;
+  store.save();
+  audit.record({ actor: req.user, action: 'keys.rotate', ip: ipOf(req), detail: { version, rewrapped: d.records.length + d.users.length } });
+  res.json({ ok: true, version, rewrapped: d.records.length + d.users.length });
+});
+
+app.delete('/api/admin/networks', adminOnly, (req, res) => {
+  const ok = removeNetwork(String(req.body?.cidr || ''));
+  if (ok) audit.record({ actor: req.user, action: 'network.remove', target: req.body.cidr, ip: ipOf(req) });
+  res.json({ ok });
+});
+
+app.use('/api', (req, res) => fail(res, 404, 'Not found.'));
+
+// ---------- Front end ----------
+const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist');
+if (fs.existsSync(dist)) {
+  app.use(express.static(dist, { index: false, maxAge: '1h' }));
+  app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
 }
 
-async function seedLocalDemoPatients() {
-  if (db || process.env.NODE_ENV === 'production') return;
-  const demoUsers = [
-    { id: 'demo-patient-alex', email: 'john.doe@email.com', name: 'Alex Morgan (Demo)', password: 'DemoPatient123!', role: 'patient', bloodType: 'A+', allergies: 'Penicillin', phone: '+1 555 010 1101', dateOfBirth: '1990-05-15', address: '100 Demo Lane, Sample City', emergencyContact: 'Morgan Lee — +1 555 010 1102', insuranceProvider: 'Demo Health Plan', insuranceNumber: 'DEMO-A1001' },
-    { id: 'demo-patient-jamie', email: 'sarah.johnson@email.com', name: 'Jamie Patel (Demo)', password: 'DemoPatient123!', role: 'patient', bloodType: 'O+', allergies: 'None known', phone: '+1 555 010 2201', dateOfBirth: '1985-08-22', address: '200 Demo Avenue, Sample City', emergencyContact: 'Riley Patel — +1 555 010 2202', insuranceProvider: 'SampleCare', insuranceNumber: 'DEMO-J2002' },
-    { id: 'demo-patient-taylor', email: 'michael.chen@email.com', name: 'Taylor Kim (Demo)', password: 'DemoPatient123!', role: 'patient', bloodType: 'B+', allergies: 'Seasonal pollen', phone: '+1 555 010 3301', dateOfBirth: '1978-12-10', address: '300 Demo Street, Sample City', emergencyContact: 'Jordan Kim — +1 555 010 3302', insuranceProvider: 'Example Medical', insuranceNumber: 'DEMO-T3003' }
-  ];
-  for (const user of demoUsers) {
-    if (deletedDemoPatientIds.has(user.id) || deletedDemoPatientEmails.has(user.email)) continue;
-    if (!users.has(user.email)) users.set(user.email, user);
-    await seedDemoRecords(user.id, user.email);
-  }
-  await persistLocalStore();
-}
-
-// Login
-app.post('/api/auth/demo-session', async (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(404).json({ error: 'Demo sign-in is disabled' });
-  }
-  const { email, name, role } = req.body;
-  if (!email || !['doctor', 'patient'].includes(role)) {
-    return res.status(400).json({ error: 'Email and valid role are required' });
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  let user = db ? await getUserFromFirestore(normalizedEmail) : users.get(normalizedEmail);
-  if (user && user.role !== role) {
-    return res.status(409).json({ error: `This email is already registered as a ${user.role}` });
-  }
-  if (!user) {
-    user = { id: Date.now().toString(), email: normalizedEmail, name: name || normalizedEmail.split('@')[0], role, createdAt: new Date().toISOString() };
-    if (db) {
-      const savedUser = await saveUserToFirestore(user);
-      if (savedUser) user = savedUser;
-      else users.set(normalizedEmail, user);
-    } else {
-      users.set(normalizedEmail, user);
-      await persistLocalStore();
-    }
-  }
-  if (role === 'patient') await seedDemoRecords(user.id, user.email);
-
-  const clientIP = req.ip || req.connection.remoteAddress;
-  const token = generateToken({ id: user.id, role, network: clientIP, ssid: null });
-  res.json({ token, user: { id: user.id, email: user.email, role: user.role, name: user.name } });
+app.use((err, req, res, next) => {
+  console.error('[error]', err);
+  if (res.headersSent) return next(err);
+  return fail(res, err.type === 'entity.too.large' ? 413 : 500, 'Something went wrong. Please try again.');
 });
 
-app.post('/api/auth/login', async (req, res) => {
-  const { email, password, role: requestedRole, ssid, location } = req.body;
-  const clientIP = req.ip || req.connection.remoteAddress;
-
-  // Get user from Firestore or memory
-  const normalizedEmail = email.trim().toLowerCase();
-  const user = db ? await getUserFromFirestore(normalizedEmail) : users.get(normalizedEmail);
-
-  if (!user || user.password !== password) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-
-  if (requestedRole && user.role !== requestedRole) {
-    return res.status(403).json({ error: `This account is registered as a ${user.role} and cannot sign in as a ${requestedRole}.` });
-  }
-
-  // Network validation based on role
-  if (user.role === 'doctor') {
-    if (process.env.NODE_ENV === 'production' && !validateNetwork(clientIP)) {
-      return res.status(403).json({
-        error: 'Network access denied',
-        message: 'Doctors must access from hospital network'
-      });
-    }
-
-    if (process.env.NODE_ENV === 'production' && (!ssid || !ALLOWED_SSIDS.includes(ssid))) {
-      return res.status(403).json({
-        error: 'Wi-Fi network invalid',
-        message: 'Doctors must connect to hospital Wi-Fi'
-      });
-    }
-  }
-
-  const token = generateToken({
-    id: user.id,
-    role: user.role,
-    network: clientIP,
-    ssid: ssid || null
-  });
-
-  // Store session
-  activeSessions.set(token, {
-    userId: user.id,
-    email: user.email,
-    role: user.role,
-    network: clientIP,
-    ssid: ssid || null,
-    createdAt: new Date().toISOString()
-  });
-
-  res.json({
-    token,
-    user: {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      name: user.name
-    }
-  });
-});
-
-// Get user info (protected)
-app.get('/api/user/me', authenticateToken, validateNetworkAccess, async (req, res) => {
-  const user = await getUserById(req.user.id);
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  res.json({
-    id: user.id,
-    email: user.email,
-    role: user.role,
-    name: user.name,
-    network: req.user.network,
-    ssid: req.user.ssid
-  });
-});
-
-// Get all patients (doctor only)
-app.get('/api/doctor/overview', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'doctor') return res.status(403).json({ error: 'Access denied. Doctors only.' });
-  const memoryPatients = Array.from(users.values()).filter(user => user.role === 'patient').map(user => ({
-    id: user.id, email: user.email, name: user.name, createdAt: user.createdAt
-  }));
-  const firestorePatients = db
-    ? (await db.collection('users').where('role', '==', 'patient').get()).docs.map(doc => ({ id: doc.id, ...doc.data() }))
-    : [];
-  const patients = [...memoryPatients, ...firestorePatients.filter(p => !memoryPatients.some(m => m.email === p.email))];
-  const enriched = await Promise.all(patients.map(async patient => ({
-    ...patient,
-    records: await getPatientRecords(patient.id)
-  })));
-  res.json({
-    patients: enriched,
-    totalRecords: enriched.reduce((count, patient) => count + patient.records.length, 0),
-    demo: process.env.NODE_ENV !== 'production'
-  });
-});
-
-// Create or link a patient profile from the doctor's patient form.
-app.post('/api/patients', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'doctor') {
-    return res.status(403).json({ error: 'Access denied. Doctors only.' });
-  }
-
-  const { name, email, initialRecord, ...submittedProfile } = req.body;
-  if (!name?.trim() || !email?.trim()) {
-    return res.status(400).json({ error: 'Patient name and email are required.' });
-  }
-
-  const normalizedEmail = email.trim().toLowerCase();
-  let patient = db ? await getUserFromFirestore(normalizedEmail) : users.get(normalizedEmail);
-  if (patient && patient.role !== 'patient') {
-    return res.status(409).json({ error: 'That email is already registered to a doctor account.' });
-  }
-
-  const profileFields = ['phone', 'dateOfBirth', 'address', 'bloodType', 'allergies', 'emergencyContact', 'insuranceProvider', 'insuranceNumber'];
-  const profile = Object.fromEntries(profileFields.filter(field => submittedProfile[field] !== undefined).map(field => [field, submittedProfile[field]]));
-  if (patient) {
-    const updates = { ...profile, name: name.trim(), email: normalizedEmail };
-    if (db) {
-      patient = await updateUserInFirestore(patient.id, updates);
-      if (!patient) return res.status(500).json({ error: 'Unable to update the patient profile.' });
-    } else {
-      patient = { ...patient, ...updates };
-      users.set(normalizedEmail, patient);
-      await persistLocalStore();
-    }
-  } else {
-    const patientProfile = {
-      id: Date.now().toString(),
-      ...profile,
-      name: name.trim(),
-      email: normalizedEmail,
-      role: 'patient',
-      createdAt: new Date().toISOString()
-    };
-    if (db) {
-      patient = await saveUserToFirestore(patientProfile);
-      if (!patient) return res.status(500).json({ error: 'Unable to create the patient profile.' });
-    } else {
-      patient = patientProfile;
-      users.set(normalizedEmail, patient);
-      await persistLocalStore();
-    }
-  }
-
-  let record = null;
-  if (initialRecord && (initialRecord.date || initialRecord.type || initialRecord.diagnosis)) {
-    record = {
-      ...initialRecord,
-      id: `MR-${Date.now()}`,
-      addedBy: req.user.id,
-      addedAt: new Date().toISOString()
-    };
-    if (db) {
-      const result = await updatePatientRecord(patient.id, record);
-      if (!result?.success) return res.status(500).json({ error: 'Patient profile was saved, but the initial record could not be saved.' });
-    } else {
-      const records = patientRecords.get(patient.id) || [];
-      records.push(record);
-      patientRecords.set(patient.id, records);
-      await persistLocalStore();
-    }
-  }
-
-  await persistLocalStore();
-
-  res.status(201).json({
-    patient: publicPatientProfile(patient),
-    record,
-    records: await getPatientRecords(patient.id)
-  });
-});
-
-app.get('/api/patients', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'doctor') {
-    return res.status(403).json({ error: 'Access denied. Doctors only.' });
-  }
-
-  const memoryPatients = Array.from(users.values())
-    .filter(u => u.role === 'patient')
-    .map(u => ({
-      id: u.id,
-      email: u.email,
-      name: u.name,
-      createdAt: u.createdAt
-    }));
-
-  const firestorePatients = db
-    ? (await db.collection('users').where('role', '==', 'patient').get()).docs.map(doc => ({
-      id: doc.id, email: doc.data().email, name: doc.data().name, createdAt: doc.data().createdAt
-    }))
-    : [];
-  const patients = [...memoryPatients, ...firestorePatients.filter(p => !memoryPatients.some(m => m.email === p.email))];
-
-  res.json({ patients });
-});
-
-// Delete a patient account and all records attached to it (doctor only).
-app.delete('/api/patients/:id', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'doctor') {
-    return res.status(403).json({ error: 'Access denied. Doctors only.' });
-  }
-
-  const patientId = req.params.id;
-  const patient = await getUserById(patientId);
-  if (!patient || patient.role !== 'patient') {
-    return res.status(404).json({ error: 'Patient not found.' });
-  }
-
-  try {
-    if (db) {
-      let userRef = db.collection('users').doc(patientId);
-      const userSnapshot = await userRef.get();
-      if (!userSnapshot.exists) {
-        const legacySnapshot = await db.collection('users').where('id', '==', patientId).limit(1).get();
-        userRef = legacySnapshot.empty ? null : legacySnapshot.docs[0].ref;
-      }
-
-      const batch = db.batch();
-      batch.delete(db.collection('patients').doc(patientId));
-      if (userRef) batch.delete(userRef);
-      await batch.commit();
-    } else {
-      if (['demo-patient-alex', 'demo-patient-jamie', 'demo-patient-taylor'].includes(patientId)) {
-        deletedDemoPatientIds.add(patientId);
-        if (patient.email) deletedDemoPatientEmails.add(patient.email);
-      }
-    }
-
-    for (const [email, user] of users.entries()) {
-      if (user.id === patientId) users.delete(email);
-    }
-    patientRecords.delete(patientId);
-    if (!db) await persistLocalStore();
-
-    for (const [token, session] of activeSessions.entries()) {
-      if (session.userId === patientId) activeSessions.delete(token);
-    }
-
-    res.json({ message: 'Patient and associated records deleted successfully.', patientId });
-  } catch (error) {
-    console.error('Unable to delete patient:', error.message);
-    res.status(500).json({ error: 'Unable to delete the patient and records.' });
-  }
-});
-
-// Get patient records (doctor only)
-app.get('/api/patients/:id/records', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'doctor') {
-    return res.status(403).json({ error: 'Access denied. Doctors only.' });
-  }
-
-  const patientId = req.params.id;
-
-  const patient = await getUserById(patientId);
-  if (!patient || patient.role !== 'patient') return res.status(404).json({ error: 'Patient not found' });
-
-  // Fetch from Firestore if available
-  if (db) {
-    const records = await getPatientRecords(patientId);
-    return res.json({
-      patientId,
-      patientName: patient.name || 'Unknown',
-      patient: publicPatientProfile(patient),
-      records
-    });
-  }
-
-  // Fallback to in-memory
-  res.json({
-    patientId,
-    patientName: patient.name,
-    patient: publicPatientProfile(patient),
-    records: patientRecords.get(patientId) || []
-  });
-});
-
-// Update patient records (doctor only) - Real-time sync
-app.post('/api/patients/:id/records', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'doctor') {
-    return res.status(403).json({ error: 'Access denied. Doctors only.' });
-  }
-
-  const patientId = req.params.id;
-  const recordData = {
-    ...req.body,
-    id: `MR-${Date.now()}`,
-    addedBy: req.user.id,
-    addedAt: new Date().toISOString()
-  };
-
-  // Save to Firestore for real-time sync
-  if (db) {
-    const result = await updatePatientRecord(patientId, recordData);
-    if (result.success) {
-      return res.json({
-        message: 'Record added successfully',
-        record: recordData,
-        synced: true
-      });
-    } else {
-      return res.status(500).json({ error: 'Failed to save record' });
-    }
-  }
-
-  const records = patientRecords.get(patientId) || [];
-  records.push(recordData);
-  patientRecords.set(patientId, records);
-  await persistLocalStore();
-
-  // Fallback storage supports local demos and restarts only when Firebase is configured.
-  res.json({
-    message: 'Record added to local demo storage',
-    record: recordData,
-    synced: false
-  });
-});
-
-// Get own records (patient only)
-app.get('/api/my-records', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'patient') {
-    return res.status(403).json({ error: 'Access denied. Patients only.' });
-  }
-
-  const patientId = req.user.id;
-  const patient = await getUserById(patientId);
-
-  // Fetch from Firestore if available
-  if (db) {
-    const records = await getPatientRecords(patientId);
-    return res.json({
-      patientId,
-      patientName: patient?.name || 'Unknown',
-      patient: patient ? publicPatientProfile(patient) : null,
-      records
-    });
-  }
-
-  // Fallback to in-memory
-  res.json({
-    patientId,
-    patientName: patient?.name || 'Unknown',
-    patient: patient ? publicPatientProfile(patient) : null,
-    records: patientRecords.get(patientId) || []
-  });
-});
-
-// ===== LANGCHAIN AI ENDPOINTS =====
-
-// Medical Record Summarization
-app.post('/api/ai/summarize-records', authenticateToken, validateNetworkAccess, async (req, res) => {
-  try {
-    const { patientId, audience } = req.body;
-    
-    let targetPatientId = patientId;
-    if (req.user.role === 'patient') {
-      targetPatientId = req.user.id;
-    } else if (req.user.role === 'doctor' && !patientId) {
-      return res.status(400).json({ error: 'Patient ID required for doctors' });
-    }
-
-    const records = await getPatientRecords(targetPatientId);
-    if (!records.length) {
-      return res.status(400).json({ error: 'No records found to summarize' });
-    }
-
-    const summary = await langchainService.summarizeMedicalRecords(records, audience || req.user.role);
-    
-    res.json({
-      summary,
-      recordsAnalyzed: records.length,
-      audience: audience || req.user.role
-    });
-  } catch (error) {
-    console.error('Summarization error:', error);
-    res.status(500).json({ error: error.message || 'Failed to summarize records' });
-  }
-});
-
-// Symptom Analysis
-app.post('/api/ai/analyze-symptoms', authenticateToken, validateNetworkAccess, async (req, res) => {
-  try {
-    const { symptoms, patientContext } = req.body;
-    
-    if (!symptoms || (Array.isArray(symptoms) && symptoms.length === 0)) {
-      return res.status(400).json({ error: 'Symptoms are required' });
-    }
-
-    const symptomList = (Array.isArray(symptoms) ? symptoms : String(symptoms).split(','))
-      .map(value => String(value).trim().toLowerCase().replace(/[ -]+/g, '_'))
-      .filter(Boolean);
-    const recognizedSymptoms = new Set([
-      'fever', 'headache', 'fatigue', 'body_ache', 'sore_throat', 'chills',
-      'dizziness', 'blurred_vision', 'increased_thirst', 'frequent_urination',
-      'localized_pain', 'high_fever', 'severe_fatigue', 'none'
-    ]);
-    const modelSymptoms = symptomList.filter(symptom => recognizedSymptoms.has(symptom));
-    const emergencySymptoms = new Set([
-      'chest_pain', 'difficulty_breathing', 'shortness_of_breath',
-      'severe_bleeding', 'loss_of_consciousness', 'seizure'
-    ]);
-    const emergency = symptomList.some(symptom => emergencySymptoms.has(symptom));
-
-    if (emergency) {
-      return res.json({
-        analysis: {
-          possibleConditions: [],
-          urgencyLevel: 'EMERGENCY',
-          recommendedActions: ['Contact your local emergency services or go to an emergency department now.'],
-          disclaimer: 'This is an automated safety message, not a diagnosis. Contact a healthcare professional for medical advice.'
-        },
-        model: 'local-healthcare-classifier',
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    if (!modelSymptoms.length) {
-      return res.status(422).json({
-        error: 'Enter at least one symptom recognized by the local model: fever, headache, fatigue, body ache, sore throat, chills, dizziness, blurred vision, increased thirst, frequent urination, localized pain, high fever, or severe fatigue.'
-      });
-    }
-
-    const context = patientContext || {};
-    let modelResponse;
-    try {
-      const response = await fetch(`${LOCAL_ML_API_URL}/predict`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          age: Number(context.age) || 35,
-          gender: String(context.gender || 'male').toLowerCase(),
-          symptoms: modelSymptoms
-        }),
-        signal: AbortSignal.timeout(15000)
-      });
-      modelResponse = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        console.error('Local ML prediction failed:', modelResponse.error || response.statusText);
-        return res.status(502).json({ error: 'The local prediction model could not process this request.' });
-      }
-    } catch (error) {
-      console.error('Local ML service unavailable:', error.message);
-      return res.status(503).json({
-        error: 'Local symptom model is unavailable. Start it with PORT=5001 ./ml/venv/bin/python ml/src/predict.py.'
-      });
-    }
-
-    const prediction = modelResponse.prediction;
-    if (!prediction?.condition) {
-      return res.status(502).json({ error: 'The local prediction model returned no condition.' });
-    }
-
-    const conditionLabel = value => String(value).replace(/_/g, ' ');
-    const possibleConditions = [prediction.condition, ...(prediction.top_alternatives || [])
-      .map(alternative => alternative.condition)]
-      .filter(Boolean)
-      .map(conditionLabel);
-    const analysis = {
-      possibleConditions,
-      urgencyLevel: 'MEDIUM',
-      recommendedActions: ['Discuss these symptoms with a licensed healthcare professional. Seek urgent care if symptoms become severe or worsen.'],
-      disclaimer: 'This educational model was trained on synthetic data. Its output is not a diagnosis, medical advice, or a clinically validated triage assessment. Consult a healthcare professional.'
-    };
-    
-    res.json({
-      analysis,
-      model: 'local-healthcare-classifier',
-      confidence: prediction.confidence,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Symptom analysis error:', error);
-    res.status(500).json({ error: error.message || 'Failed to analyze symptoms' });
-  }
-});
-
-// Drug Interaction Checker
-app.post('/api/ai/check-drug-interactions', authenticateToken, validateNetworkAccess, async (req, res) => {
-  try {
-    const { medications } = req.body;
-    
-    if (!medications || (Array.isArray(medications) && medications.length === 0)) {
-      return res.status(400).json({ error: 'Medications are required' });
-    }
-
-    const interactions = await langchainService.checkDrugInteractions(medications);
-    
-    res.json({
-      interactions,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Drug interaction check error:', error);
-    res.status(500).json({ error: error.message || 'Failed to check drug interactions' });
-  }
-});
-
-// Treatment Recommendations
-app.post('/api/ai/suggest-treatments', authenticateToken, validateNetworkAccess, async (req, res) => {
-  if (req.user.role !== 'doctor') {
-    return res.status(403).json({ error: 'Access denied. Doctors only.' });
-  }
-
-  try {
-    const { diagnosis, patientId } = req.body;
-    
-    if (!diagnosis) {
-      return res.status(400).json({ error: 'Diagnosis is required' });
-    }
-
-    const records = patientId ? await getPatientRecords(patientId) : [];
-    const recommendations = await langchainService.suggestTreatmentOptions(diagnosis, records);
-    
-    res.json({
-      recommendations,
-      recordsAnalyzed: records.length,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Treatment suggestion error:', error);
-    res.status(500).json({ error: error.message || 'Failed to suggest treatments' });
-  }
-});
-
-// Medical Chatbot
-app.post('/api/ai/chat', authenticateToken, validateNetworkAccess, async (req, res) => {
-  try {
-    const { message, patientId, clearHistory } = req.body;
-    
-    if (!message) {
-      return res.status(400).json({ error: 'Message is required' });
-    }
-
-    if (clearHistory) {
-      langchainService.medicalChatbot.clearHistory();
-    }
-
-    let patientContext = {};
-    if (patientId) {
-      const patient = await getUserById(patientId);
-      if (patient) {
-        patientContext = {
-          name: patient.name,
-          bloodType: patient.bloodType,
-          allergies: patient.allergies,
-          recentRecords: (await getPatientRecords(patientId)).slice(-3)
-        };
-      }
-    }
-
-    const response = await langchainService.medicalChatbot.chat(message, patientContext);
-    
-    res.json({
-      ...response,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Chatbot error:', error);
-    res.status(500).json({ error: error.message || 'Chatbot error' });
-  }
-});
-
-// Anomaly Detection
-app.post('/api/ai/detect-anomalies', authenticateToken, validateNetworkAccess, async (req, res) => {
-  try {
-    const { patientId } = req.body;
-    
-    let targetPatientId = patientId;
-    if (req.user.role === 'patient') {
-      targetPatientId = req.user.id;
-    } else if (req.user.role === 'doctor' && !patientId) {
-      return res.status(400).json({ error: 'Patient ID required for doctors' });
-    }
-
-    const records = await getPatientRecords(targetPatientId);
-    if (!records.length) {
-      return res.status(400).json({ error: 'No records found for analysis' });
-    }
-
-    const anomalies = await langchainService.detectAnomalies(records);
-    
-    res.json({
-      anomalies,
-      recordsAnalyzed: records.length,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    console.error('Anomaly detection error:', error);
-    res.status(500).json({ error: error.message || 'Failed to detect anomalies' });
-  }
-});
-
-// Logout
-app.post('/api/auth/logout', authenticateToken, (req, res) => {
-  const token = req.headers['authorization'].split(' ')[1];
-  activeSessions.delete(token);
-
-  res.json({ message: 'Logged out successfully' });
-});
-
-// Load local demo storage before accepting requests so saved records survive a restart.
-async function startServer() {
-  await loadLocalStore();
-  await seedLocalDemoPatients();
-  app.listen(PORT, HOST, () => {
-    console.log(`HealthGuard AI Server running on port ${PORT}`);
-    console.log(`Allowed Networks: ${ALLOWED_NETWORKS.join(', ')}`);
-    console.log(`Allowed SSIDs: ${ALLOWED_SSIDS.join(', ')}`);
-    console.log(`Server IP: ${ip.address()}`);
-  });
-}
-
-startServer().catch(error => {
-  console.error('Unable to start HealthGuard AI Server:', error.message);
-  process.exitCode = 1;
-});
+app.listen(PORT, () => console.log(`HealthGuard API listening on ${PORT}`));
