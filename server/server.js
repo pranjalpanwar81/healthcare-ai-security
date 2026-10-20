@@ -125,7 +125,7 @@ function hospitalNetwork(req, res, next) {
 
 const clinical = [auth, role('doctor', 'admin'), hospitalNetwork];
 
-// Consent-based access: a doctor may open a chart only with active patient consent or an active emergency override.
+// Care-team access: a doctor may open a chart only when hospital administration has assigned them, or during an active emergency override.
 function accessFor(doctorId, patientId) {
   const now = Date.now();
   const consent = db().consents.find((c) => c.doctorId === doctorId && c.patientId === patientId
@@ -292,7 +292,7 @@ app.get('/api/doctors', auth, (req, res) => {
   res.json({ doctors: db().users.filter((u) => u.role === 'doctor').map((u) => ({ id: u.id, name: u.name, specialty: u.specialty })) });
 });
 
-app.get('/api/patient/consents', patientOnly, (req, res) => {
+app.get('/api/patient/care-team', patientOnly, (req, res) => {
   const now = Date.now();
   const consents = db().consents.filter((c) => c.patientId === req.user.id && (!c.expiresAt || Date.parse(c.expiresAt) > now))
     .map((c) => ({ ...c, doctorName: findUser(c.doctorId)?.name, specialty: findUser(c.doctorId)?.specialty }));
@@ -301,26 +301,30 @@ app.get('/api/patient/consents', patientOnly, (req, res) => {
   res.json({ consents, emergencies });
 });
 
-app.post('/api/patient/consents', patientOnly, (req, res) => {
-  const { doctorId, days } = req.body || {};
-  const doctor = findUser(doctorId);
-  if (!doctor || doctor.role !== 'doctor') return fail(res, 404, 'Doctor not found.');
-  const d = Number(days);
-  const expiresAt = Number.isFinite(d) && d > 0 ? new Date(Date.now() + Math.min(d, 365) * 86400000).toISOString() : null;
-  db().consents = db().consents.filter((c) => !(c.patientId === req.user.id && c.doctorId === doctorId));
-  db().consents.push({ patientId: req.user.id, doctorId, grantedAt: new Date().toISOString(), expiresAt });
-  store.save();
-  audit.record({ actor: req.user, action: 'consent.grant', patientId: req.user.id, target: doctorId, ip: ipOf(req), detail: { doctor: doctor.name, expiresAt } });
-  res.json({ ok: true });
+// Patients cannot change their care team (the hospital assigns it), but they can flag any access they do not recognise.
+app.post('/api/patient/report-access', patientOnly, limit('report', 10, 60 * 60 * 1000), (req, res) => {
+  const seq = Number(req.body?.seq);
+  const entry = db().audit[seq];
+  if (!Number.isInteger(seq) || !entry || entry.patientId !== req.user.id) return fail(res, 404, 'That access entry was not found.');
+  const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 300) : '';
+  audit.record({ actor: req.user, action: 'access.reported', patientId: req.user.id, target: String(seq), ip: ipOf(req),
+    detail: { reportedActor: entry.actorName, reportedAction: entry.action, reportedAt: entry.ts, note } });
+  res.status(201).json({ ok: true });
 });
 
-app.delete('/api/patient/consents/:doctorId', patientOnly, (req, res) => {
-  const before = db().consents.length;
-  db().consents = db().consents.filter((c) => !(c.patientId === req.user.id && c.doctorId === req.params.doctorId));
+// ---------- Care team assignment (security officer / hospital administration) ----------
+function assign({ patientId, doctorId, days, by, ip }) {
+  const patient = findUser(patientId);
+  const doctor = findUser(doctorId);
+  if (!patient || patient.role !== 'patient') throw Object.assign(new Error('Patient not found.'), { status: 404 });
+  if (!doctor || doctor.role !== 'doctor') throw Object.assign(new Error('Doctor not found.'), { status: 404 });
+  const d = Number(days);
+  const expiresAt = Number.isFinite(d) && d > 0 ? new Date(Date.now() + Math.min(d, 365) * 86400000).toISOString() : null;
+  db().consents = db().consents.filter((c) => !(c.patientId === patientId && c.doctorId === doctorId));
+  db().consents.push({ patientId, doctorId, grantedAt: new Date().toISOString(), expiresAt, assignedBy: by.name });
   store.save();
-  audit.record({ actor: req.user, action: 'consent.revoke', patientId: req.user.id, target: req.params.doctorId, ip: ipOf(req), detail: { doctor: findUser(req.params.doctorId)?.name } });
-  res.json({ ok: true, removed: before - db().consents.length });
-});
+  audit.record({ actor: by, action: 'careteam.assign', patientId, target: doctorId, ip, detail: { doctor: doctor.name, expiresAt } });
+}
 
 // ---------- Doctor ----------
 app.get('/api/doctor/patients', clinical, role('doctor'), (req, res) => {
@@ -350,7 +354,7 @@ app.get('/api/doctor/patients/:id', clinical, role('doctor'), (req, res) => {
   const access = accessFor(req.user.id, p.id);
   if (!access.allowed) {
     audit.record({ actor: req.user, action: 'record.read', patientId: p.id, outcome: 'denied', ip: ipOf(req), detail: { reason: 'no consent' } });
-    return fail(res, 403, 'This patient has not shared their records with you.', { code: 'CONSENT_REQUIRED' });
+    return fail(res, 403, "You are not on this patient's care team.", { code: 'CONSENT_REQUIRED' });
   }
   const records = patientRecords(p.id);
   audit.record({ actor: req.user, action: 'record.read', patientId: p.id, ip: ipOf(req), detail: { basis: access.basis } });
@@ -363,7 +367,7 @@ app.post('/api/doctor/patients/:id/records', clinical, role('doctor'), (req, res
   const access = accessFor(req.user.id, p.id);
   if (!access.allowed) {
     audit.record({ actor: req.user, action: 'record.write', patientId: p.id, outcome: 'denied', ip: ipOf(req) });
-    return fail(res, 403, 'This patient has not shared their records with you.', { code: 'CONSENT_REQUIRED' });
+    return fail(res, 403, "You are not on this patient's care team.", { code: 'CONSENT_REQUIRED' });
   }
   try {
     const b = req.body || {};
@@ -472,6 +476,39 @@ app.post('/api/admin/keys/rotate', adminOnly, (req, res) => {
   res.json({ ok: true, version, rewrapped: d.records.length + d.users.length });
 });
 
+app.get('/api/admin/care-teams', adminOnly, (req, res) => {
+  const now = Date.now();
+  const d = db();
+  res.json({
+    patients: d.users.filter((u) => u.role === 'patient').map((p) => ({
+      id: p.id,
+      name: p.name,
+      team: d.consents.filter((c) => c.patientId === p.id && (!c.expiresAt || Date.parse(c.expiresAt) > now))
+        .map((c) => ({ doctorId: c.doctorId, doctorName: findUser(c.doctorId)?.name, expiresAt: c.expiresAt, assignedBy: c.assignedBy || null })),
+    })),
+    doctors: d.users.filter((u) => u.role === 'doctor').map((u) => ({ id: u.id, name: u.name, specialty: u.specialty })),
+  });
+});
+
+app.post('/api/admin/care-teams', adminOnly, (req, res) => {
+  try {
+    assign({ ...req.body, by: req.user, ip: ipOf(req) });
+    return res.status(201).json({ ok: true });
+  } catch (err) {
+    return fail(res, err.status || 400, err.message);
+  }
+});
+
+app.delete('/api/admin/care-teams', adminOnly, (req, res) => {
+  const { patientId, doctorId } = req.body || {};
+  const before = db().consents.length;
+  db().consents = db().consents.filter((c) => !(c.patientId === patientId && c.doctorId === doctorId));
+  const removed = before - db().consents.length;
+  store.save();
+  if (removed) audit.record({ actor: req.user, action: 'careteam.remove', patientId, target: doctorId, ip: ipOf(req), detail: { doctor: findUser(doctorId)?.name } });
+  res.json({ ok: true, removed });
+});
+
 app.delete('/api/admin/networks', adminOnly, (req, res) => {
   const ok = removeNetwork(String(req.body?.cidr || ''));
   if (ok) audit.record({ actor: req.user, action: 'network.remove', target: req.body.cidr, ip: ipOf(req) });
@@ -488,9 +525,11 @@ if (fs.existsSync(dist)) {
 }
 
 app.use((err, req, res, next) => {
-  console.error('[error]', err);
   if (res.headersSent) return next(err);
-  return fail(res, err.type === 'entity.too.large' ? 413 : 500, 'Something went wrong. Please try again.');
+  if (err.type === 'entity.parse.failed') return fail(res, 400, 'The request could not be read.');
+  if (err.type === 'entity.too.large') return fail(res, 413, 'The request is too large.');
+  console.error('[error]', err);
+  return fail(res, 500, 'Something went wrong. Please try again.');
 });
 
 if (!process.env.VERCEL) app.listen(PORT, () => console.log(`HealthGuard API listening on ${PORT}`));

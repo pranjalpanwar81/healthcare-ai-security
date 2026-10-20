@@ -2,16 +2,16 @@ import { useState } from 'react';
 import { Link, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { AlertTriangle, ArrowLeft, Bell, FilePlus2, HeartPulse, Lock, Search, Siren, Sparkles, Users, Wifi, WifiOff } from 'lucide-react';
 import { api } from '../../api.js';
-import { Badge, Empty, Field, Loading, Modal, Notice, Tabs, TopBar, fmtDate, fmtDateTime, initials, useAsync, usePageTitle, useSession, useToast } from '../../ui.jsx';
+import { AppShell, Badge, Empty, Field, Loading, Modal, Notice, fmtDate, fmtDateTime, initials, useAsync, usePageTitle, useSession, useToast } from '../../ui.jsx';
 import Explanation from '../../components/Explanation.jsx';
 import VitalsForm, { toNumbers } from '../../components/VitalsForm.jsx';
 import { RecordCard } from '../patient/PatientApp.jsx';
 
-const TABS = [
-  { to: '/clinic', label: 'My patients', icon: Users, end: true },
-  { to: '/clinic/find', label: 'Find a patient', icon: Search },
-  { to: '/clinic/assess', label: 'Risk check', icon: Sparkles },
-  { to: '/clinic/alerts', label: 'My alerts', icon: Bell },
+const NAV = [
+  { to: '/clinic', label: 'My patients', short: 'Patients', icon: Users, end: true },
+  { to: '/clinic/find', label: 'Find a patient', short: 'Find', icon: Search },
+  { to: '/clinic/assess', label: 'Risk check', short: 'Risk check', icon: Sparkles },
+  { to: '/clinic/alerts', label: 'My alerts', short: 'Alerts', icon: Bell },
 ];
 
 export function NetworkLock({ error }) {
@@ -36,10 +36,7 @@ function Failure({ error, retry }) {
 
 export default function ClinicApp() {
   return (
-    <>
-      <TopBar />
-      <Tabs items={TABS} label="Clinic sections" />
-      <main id="main" className="container">
+    <AppShell nav={NAV} label="Clinic sections" network="Hospital network">
         <Routes>
           <Route index element={<PatientList />} />
           <Route path="find" element={<FindPatient />} />
@@ -47,8 +44,7 @@ export default function ClinicApp() {
           <Route path="alerts" element={<Alerts />} />
           <Route path="patients/:id" element={<Chart />} />
         </Routes>
-      </main>
-    </>
+    </AppShell>
   );
 }
 
@@ -62,10 +58,10 @@ function PatientList() {
   return (
     <div className="stack" style={{ '--stack': '20px' }}>
       <div className="page-head spread">
-        <div><h1>Good to see you, {user.name}</h1><p>Patients who have shared their records with you.</p></div>
+        <div><h1>Good to see you, {user.name}</h1><p>Patients on your care team, assigned by hospital administration.</p></div>
         <Badge tone="ok" icon={Wifi}>{network?.network || 'Hospital network'}</Badge>
       </div>
-      {patients.length === 0 ? <Empty icon={Users} title="No patients have shared their records yet"><Link to="/clinic/find">Find a patient</Link></Empty> : (
+      {patients.length === 0 ? <Empty icon={Users} title="No patients are assigned to you yet"><Link to="/clinic/find">Find a patient</Link></Empty> : (
         <ul className="list grid" style={{ gap: 10 }}>
           {patients.map((p) => (
             <li key={p.id} style={{ border: 0, padding: 0 }}>
@@ -74,7 +70,7 @@ function PatientList() {
                 <span style={{ flex: 1, minWidth: 0 }}><strong>{p.name}</strong><br /><span className="small muted">{p.recordCount} record{p.recordCount === 1 ? '' : 's'} · last visit {fmtDate(p.lastVisit)}</span></span>
                 {p.access.basis === 'emergency'
                   ? <Badge tone="alert" icon={Siren}>Emergency access</Badge>
-                  : <Badge tone="ok">{p.access.until ? `Shared until ${fmtDate(p.access.until)}` : 'Shared'}</Badge>}
+                  : <Badge tone="ok">{p.access.until ? `Care team until ${fmtDate(p.access.until)}` : 'Care team'}</Badge>}
               </Link>
             </li>
           ))}
@@ -124,13 +120,13 @@ function FindPatient() {
           <div className="card stack">
             <div className="spread">
               <span className="row"><span className="avatar" aria-hidden="true">{initials(res.patient.name)}</span><strong>{res.patient.name}</strong></span>
-              {res.access.allowed ? <Badge tone="ok">You have access</Badge> : <Badge tone="neutral" icon={Lock}>Not shared with you</Badge>}
+              {res.access.allowed ? <Badge tone="ok">You have access</Badge> : <Badge tone="neutral" icon={Lock}>Not on your care team</Badge>}
             </div>
             {res.access.allowed
               ? <Link className="btn btn-primary" to={`/clinic/patients/${res.patient.id}`} style={{ alignSelf: 'flex-start' }}>Open record</Link>
               : (
                 <>
-                  <p style={{ margin: 0 }}>Ask the patient to share their record with you from their HealthGuard account. In a genuine emergency you can use emergency access.</p>
+                  <p style={{ margin: 0 }}>You are not on this patient's care team. Ask hospital administration to assign you. In a genuine emergency you can use emergency access.</p>
                   <button className="btn btn-danger" style={{ alignSelf: 'flex-start' }} onClick={() => setBg(true)}><Siren size={18} aria-hidden="true" />Emergency access</button>
                 </>
               )}
@@ -164,7 +160,7 @@ function Chart() {
 
   if (data.loading) return <Loading />;
   if (data.error) {
-    if (data.error.code === 'CONSENT_REQUIRED') return <Notice tone="warn" title="No access">This patient has not shared their record with you. <Link to="/clinic/find">Request emergency access</Link></Notice>;
+    if (data.error.code === 'CONSENT_REQUIRED') return <Notice tone="warn" title="No access">You are not on this patient's care team. <Link to="/clinic/find">Use emergency access</Link> if this is an emergency.</Notice>;
     return <Failure error={data.error} retry={data.reload} />;
   }
   const { patient, access, records, latestVitals } = data.data;
@@ -189,7 +185,7 @@ function Chart() {
       <Link to="/clinic" className="btn btn-ghost btn-sm" style={{ alignSelf: 'flex-start' }}><ArrowLeft size={16} aria-hidden="true" />All patients</Link>
       <div className="page-head spread">
         <div className="row"><span className="avatar" aria-hidden="true" style={{ width: 56, height: 56, fontSize: 'var(--step-1)' }}>{initials(patient.name)}</span><div><h1 style={{ margin: 0 }}>{patient.name}</h1><p>{pr.gender || 'Gender not given'} · born {fmtDate(pr.dob)} · blood group {pr.bloodGroup || 'unknown'}</p></div></div>
-        {access.basis === 'emergency' ? <Badge tone="alert" icon={Siren}>Emergency access until {fmtDateTime(access.until)}</Badge> : <Badge tone="ok">Shared by patient</Badge>}
+        {access.basis === 'emergency' ? <Badge tone="alert" icon={Siren}>Emergency access until {fmtDateTime(access.until)}</Badge> : <Badge tone="ok">Care team</Badge>}
       </div>
       {pr.allergies && pr.allergies !== 'None known' && <Notice tone="alert" title={`Allergy: ${pr.allergies}`} />}
 

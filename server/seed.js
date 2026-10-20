@@ -67,10 +67,11 @@ export function seedDemo() {
     }
   }
 
-  // Consent: Dr. Mehta cares for Rohan, Ananya and Meera; Dr. Iyer cares for Farhan and Rohan (time-limited).
+  // Care teams assigned by hospital administration: Dr. Mehta cares for Rohan, Ananya and Meera; Dr. Iyer cares for Farhan and Rohan (time-limited).
   const grant = (patientEmail, doctor, expiresInDays = null) => db.consents.push({
     patientId: byEmail[patientEmail].id, doctorId: doctor.id, grantedAt: days(90),
     expiresAt: expiresInDays ? new Date(Date.now() + expiresInDays * 86400000).toISOString() : null,
+    assignedBy: admin.name,
   });
   grant('rohan@healthguard.demo', doctors[0]);
   grant('ananya@healthguard.demo', doctors[0]);
@@ -85,7 +86,7 @@ export function seedDemo() {
   record({ actor: admin, action: 'system.init', ip, detail: { note: 'Ledger created' } });
   for (const [email, doctor] of [['rohan@healthguard.demo', doctors[0]], ['farhan@healthguard.demo', doctors[1]], ['ananya@healthguard.demo', doctors[0]], ['rohan@healthguard.demo', doctors[1]]]) {
     const p = byEmail[email];
-    record({ actor: p, action: 'consent.grant', patientId: p.id, target: doctor.id, ip: '49.36.112.8', detail: { doctor: doctor.name } });
+    record({ actor: admin, action: 'careteam.assign', patientId: p.id, target: doctor.id, ip, detail: { doctor: doctor.name } });
     record({ actor: doctor, action: 'record.read', patientId: p.id, ip, detail: { basis: 'consent' } });
   }
   record({ actor: doctors[0], action: 'record.write', patientId: byEmail['ananya@healthguard.demo'].id, ip, detail: { basis: 'consent' } });

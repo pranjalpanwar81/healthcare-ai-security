@@ -37,7 +37,7 @@ export default function Register() {
   }
 
   return (
-    <>
+    <div className="public">
       <TopBar />
       <main id="main" className="auth-wrap">
         <div className="auth-card stack" style={{ '--stack': '20px', maxWidth: 560 }}>
@@ -100,6 +100,6 @@ export default function Register() {
           </form>
         </div>
       </main>
-    </>
+    </div>
   );
 }

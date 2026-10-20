@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { LogIn, Stethoscope, User, Wifi, WifiOff } from 'lucide-react';
+import { Eye, LockKeyhole, LogIn, ScrollText, Stethoscope, User, Wifi, WifiOff } from 'lucide-react';
 import { api } from '../api.js';
 import { Field, Notice, PasswordInput, TopBar, homeFor, useSession, usePageTitle } from '../ui.jsx';
 import NetworkEnroll from '../components/NetworkEnroll.jsx';
@@ -60,9 +60,18 @@ export default function SignIn() {
   const fillDemo = (d) => { setEmail(d.email); setPassword(DEMO_PASSWORD); setError(null); };
 
   return (
-    <>
+    <div className="public">
       <TopBar />
-      <main id="main" className="auth-wrap">
+      <main id="main" className="auth-split">
+        <aside className="auth-side">
+          <h2>{portal === 'clinician' ? 'Clinical access, on the hospital network only.' : 'Your record. Locked, watched and explained.'}</h2>
+          <ul>
+            <li><LockKeyhole size={20} aria-hidden="true" />Every record is encrypted with its own key.</li>
+            <li><Eye size={20} aria-hidden="true" />{portal === 'clinician' ? 'Every chart you open is written to the audit ledger.' : 'You can see every time someone opens your file.'}</li>
+            <li><ScrollText size={20} aria-hidden="true" />The access history cannot be edited without detection.</li>
+          </ul>
+        </aside>
+        <div className="auth-main">
         <div className="auth-card stack" style={{ '--stack': '20px' }}>
           <div>
             <h1>{portal === 'clinician' ? 'Clinician sign-in' : 'Patient sign-in'}</h1>
@@ -125,7 +134,8 @@ export default function SignIn() {
             </div>
           </section>
         </div>
+        </div>
       </main>
-    </>
+    </div>
   );
 }

@@ -72,6 +72,10 @@ export function startMonitoring() {
       raise(e, { rule: 'break-glass', severity: 'high', title: 'Emergency access used',
         detail: `Reason given: "${e.detail?.reason ?? 'not stated'}". Review within 24 hours.` });
     }
+    if (e.action === 'access.reported') {
+      raise({ ...e, actorId: `${e.actorId}:${e.target}` }, { rule: 'patient-report', severity: 'high', title: 'Patient reported an access they do not recognise',
+        detail: `${e.actorName} flagged "${e.detail?.reportedAction}" by ${e.detail?.reportedActor ?? 'unknown'} on ${new Date(e.detail?.reportedAt).toLocaleString('en-IN', { timeZone: process.env.HOSPITAL_TIMEZONE || 'Asia/Kolkata' })}.${e.detail?.note ? ` Note: "${e.detail.note}"` : ''}` });
+    }
     if (e.action === 'network.enroll' && e.outcome === 'success') {
       raise(e, { rule: 'network-enrolled', severity: 'low', title: 'New hospital network registered',
         detail: `${e.target} was added to the trusted networks.` });

@@ -1,6 +1,6 @@
 # HealthGuard: secure, explainable electronic health records
 
-HealthGuard is an electronic health record (EHR) system that combines layered security techniques with an explainable risk assessment model. Patients control who can see their records and can watch every access. Clinicians get risk results that explain themselves.
+HealthGuard is an electronic health record (EHR) system that combines layered security techniques with an explainable risk assessment model. Hospital administration assigns each patient's care team. Patients see who is on it and every access, and can report anything they do not recognise. Clinicians get risk results that explain themselves.
 
 ## Security techniques
 
@@ -10,7 +10,8 @@ HealthGuard is an electronic health record (EHR) system that combines layered se
 | **Key rotation without decryption** | Rotating the master key re-wraps only the data keys. Record contents are never decrypted. | `POST /api/admin/keys/rotate` |
 | **Blind index** | Emails are stored encrypted. Look-ups use an HMAC fingerprint, so the database never holds a searchable plain-text email. | `blindIndex()` |
 | **Tamper-evident audit ledger** | Every access, change and denial is appended to a hash chain signed with HMAC-SHA256. Editing, deleting or reordering any entry breaks verification from that point on. Patients see their own slice of the ledger with a live integrity seal. | `server/lib/audit.js` |
-| **Patient-controlled consent** | Doctors can open a chart only with active, optionally time-limited consent. Revocation takes effect on the next request. | `accessFor()` in `server/server.js` |
+| **Care-team access control** | Doctors can open a chart only when the security officer has assigned them to that patient's care team, optionally time-limited. Removal takes effect on the next request. | `accessFor()`, `/api/admin/care-teams` |
+| **Patient reporting** | Patients can flag any entry in their access history. It raises a high-severity alert for the security officer. | `/api/patient/report-access` |
 | **Break-glass emergency access** | One hour of access with a mandatory written reason. The patient is told, and an alert goes to the security officer. | `POST /api/doctor/break-glass` |
 | **Hospital-network gate for clinicians** | Clinicians can sign in and work only from approved hospital network addresses, checked by the server on every request. Networks are registered by hospital IT with an enrolment code. | `server/lib/network.js` |
 | **Behavioural anomaly detection** | Flags bulk record reads, out-of-hours access, repeated denied requests, failed sign-in bursts, off-network clinician sign-ins, emergency access and new networks. | `server/lib/anomaly.js` |
@@ -32,9 +33,9 @@ Decision support only. The model uses synthetic data and is not a medical device
 
 ## Roles
 
-- **Patient**: records, health check with explanation, sharing controls, emergency-access notices, access history.
-- **Clinician**: consented patient list, chart, add encrypted records, explained risk check, emergency access, personal alerts. Hospital network required.
-- **Security officer**: ledger verification and tamper simulation, key rotation, alert review, trusted networks, raw ledger. Hospital network required.
+- **Patient**: records, health check with explanation, care team (read-only), emergency-access notices, access history with reporting.
+- **Clinician**: assigned patient list, chart, add encrypted records, explained risk check, emergency access, personal alerts. Hospital network required.
+- **Security officer**: care-team assignment, ledger verification and tamper simulation, key rotation, alert review, trusted networks, raw ledger. Hospital network required.
 
 Demo accounts (password `HealthGuard2026`): `rohan@healthguard.demo` (patient), `arjun.mehta@healthguard.demo` (doctor), `security@healthguard.demo` (security officer). More are listed on the sign-in page.
 

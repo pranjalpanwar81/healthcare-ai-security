@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
-import { AlertTriangle, CheckCircle2, Eye, EyeOff, Info, LogOut, Moon, ShieldAlert, Sun, Type, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Eye, EyeOff, Info, LayoutDashboard, LogOut, Moon, ShieldAlert, Sun, Type, Wifi, XCircle } from 'lucide-react';
 
 export const SessionContext = createContext(null);
 export const useSession = () => useContext(SessionContext);
@@ -111,24 +111,71 @@ export function DisplayControls() {
   );
 }
 
+/** Top bar for public pages. Signed-out visitors see the given actions; signed-in users get a way back to their dashboard. */
 export function TopBar({ children }) {
   const session = useSession();
+  const user = session?.user;
   return (
     <header className="topbar">
       <div className="container topbar-inner">
-        <Link to={session?.user ? homeFor(session.user.role) : '/'} className="brand"><Logo />HealthGuard</Link>
+        <Link to="/" className="brand"><Logo />HealthGuard</Link>
         <div className="topbar-tools">
-          {children}
+          {!user && children}
           <DisplayControls />
-          {session?.user && (
+          {user && (
             <>
-              <div className="user-chip"><strong>{session.user.name}</strong><span>{roleLabel(session.user.role)}</span></div>
+              <Link to={homeFor(user.role)} className="btn btn-sm btn-primary"><LayoutDashboard size={16} aria-hidden="true" />My dashboard</Link>
               <button type="button" className="btn btn-sm" onClick={session.signOut}><LogOut size={16} aria-hidden="true" />Sign out</button>
             </>
           )}
         </div>
       </div>
     </header>
+  );
+}
+
+/** Signed-in layout: sidebar navigation on desktop, top bar plus bottom tabs on phones. */
+export function AppShell({ nav, label, network, children }) {
+  const session = useSession();
+  const user = session.user;
+  return (
+    <div className="shell">
+      <aside className="sidebar" aria-label="Sidebar">
+        <Link to={homeFor(user.role)} className="brand"><Logo />HealthGuard</Link>
+        <nav aria-label={label}>
+          <div className="side-label">{roleLabel(user.role)}</div>
+          <div className="side-nav">
+            {nav.map(({ to, label: text, icon: Icon, end }) => (
+              <NavLink key={to} to={to} end={end} className="side-link"><Icon size={20} aria-hidden="true" />{text}</NavLink>
+            ))}
+          </div>
+        </nav>
+        <div className="side-foot">
+          {network && <span className="net-pill"><Wifi size={16} aria-hidden="true" />{network}</span>}
+          <div className="side-user">
+            <span className="avatar" aria-hidden="true">{initials(user.name)}</span>
+            <span style={{ minWidth: 0 }}><strong>{user.name}</strong><span>{roleLabel(user.role)}</span></span>
+          </div>
+          <div className="side-tools">
+            <DisplayControls />
+            <button type="button" className="btn btn-sm btn-signout" onClick={session.signOut}><LogOut size={16} aria-hidden="true" />Sign out</button>
+          </div>
+        </div>
+      </aside>
+      <div className="shell-main">
+        <header className="mobile-bar">
+          <Link to={homeFor(user.role)} className="brand"><Logo />HealthGuard</Link>
+          <DisplayControls />
+          <button type="button" className="btn btn-sm" onClick={session.signOut} aria-label="Sign out"><LogOut size={16} aria-hidden="true" /></button>
+        </header>
+        <main id="main">{children}</main>
+        <nav className="bottom-nav" aria-label={`${label} (mobile)`}>
+          {nav.slice(0, 5).map(({ to, short, label: text, icon: Icon, end }) => (
+            <NavLink key={to} to={to} end={end}><Icon size={22} aria-hidden="true" />{short || text}</NavLink>
+          ))}
+        </nav>
+      </div>
+    </div>
   );
 }
 

@@ -29,7 +29,7 @@ export default function HowItWorks() {
   }
 
   return (
-    <>
+    <div className="public">
       <TopBar><Link to="/signin" className="btn btn-sm">Sign in</Link></TopBar>
       <main id="main" className="container">
         <div className="page-head">
@@ -95,6 +95,6 @@ export default function HowItWorks() {
           )}
         </section>
       </main>
-    </>
+    </div>
   );
 }

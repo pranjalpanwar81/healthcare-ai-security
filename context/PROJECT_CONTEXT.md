@@ -24,6 +24,12 @@ One Node service. Express serves the API under `/api` and the built React app fr
 ## Why the Wi-Fi check changed
 v1 trusted an `x-wifi-ssid` header sent by the browser, which any client can forge, and browsers cannot read the SSID anyway. v2 uses the egress IP of the hospital network as seen by the server. Kalaza Care never implemented Wi-Fi auth (it stayed on that project's backlog), so there was no pattern to copy.
 
+## Access model (changed 2026-10-21)
+Patients do not choose their doctors. The security officer (hospital administration) assigns care teams under `/api/admin/care-teams`, stored in `consents` with `assignedBy`. Patients see their care team read-only and can report any access-history entry (`/api/patient/report-access`), which raises a high `patient-report` alert. Break-glass is unchanged.
+
+## UI structure
+`AppShell` in `src/ui.jsx`: sidebar on screens 1024px and wider, top bar plus bottom tabs below that. Public pages use `TopBar`, which shows My dashboard and Sign out when signed in. The landing hero uses the real `label-card` and `AccessLedger` components with sample data.
+
 ## Roles and demo accounts (password `HealthGuard2026`)
 - Patient: rohan@, ananya@, farhan@, meera@healthguard.demo
 - Doctor: arjun.mehta@, kavya.iyer@healthguard.demo
@@ -34,7 +40,7 @@ v1 trusted an `x-wifi-ssid` header sent by the browser, which any client can for
 Dev defaults: enrol code `HOSPITAL-IT-2026`, doctor code `DOCTOR-2026`.
 
 ## Run locally
-`npm install && npm --prefix server install`, then `npm --prefix server start` (API on 3001) and `npm run dev` (Vite on 5173, proxies /api). Security test suite: `npm --prefix server test` (28 checks; run against a fresh data dir).
+`npm install && npm --prefix server install`, then `npm --prefix server start` (API on 3001) and `npm run dev` (Vite on 5173, proxies /api). Security test suite: `npm --prefix server test` (78 checks; run against a fresh DATA_DIR on another port).
 
 ## Deployment
 Vercel (see the next section). Render config was removed.
@@ -52,5 +58,6 @@ Vercel (see the next section). Render config was removed.
 - `ml/` holds the original TensorFlow pipeline from v1 (not used by the v2 server).
 
 ## Log
+- 2026-10-21: Care teams assigned by hospital, patient reporting, app shell redesign, 78-check suite, fixed malformed-JSON 500 and public top bar showing Sign in while signed in.
 - 2026-10-21: Deployed to Vercel (serverless API, stable demo ids).
 - 2026-10-21: v2 rebuild. Security core, explainable model, patient/clinic/security UIs, deploy.
