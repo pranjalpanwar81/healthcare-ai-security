@@ -160,6 +160,15 @@ check('key rotation re-wraps every data key', rot.body.ok === true, `v${rot.body
 check('records still open after rotation', (await call('GET', '/api/patient/records', undefined, pat.cookie)).body.records.length === 3);
 check('enrolment with a wrong code is refused', (await call('POST', '/api/network/enroll', { code: 'guess' })).status === 403);
 
+section('Account removal');
+const teams = (await call('GET', '/api/admin/care-teams', undefined, adm.cookie)).body.patients;
+const testP = teams.find((p) => p.name === 'Test Patient');
+check('initial accounts are protected', (await call('DELETE', `/api/admin/patients/${rohanId}`, undefined, adm.cookie)).status === 400);
+check('doctor cannot remove accounts', (await call('DELETE', `/api/admin/patients/${testP.id}`, undefined, doc.cookie)).status === 403);
+check('security officer removes a test account', (await call('DELETE', `/api/admin/patients/${testP.id}`, undefined, adm.cookie)).status === 200);
+check('removed account can no longer sign in', (await call('POST', '/api/auth/login', { email: 'new.patient@x.io', password: 'GoodPassword1' })).status === 401);
+check('ledger still verifies after removal', (await call('POST', '/api/admin/audit/verify', undefined, adm.cookie)).body.valid === true);
+
 section('Sign-out');
 check('logout succeeds', (await call('POST', '/api/auth/logout', undefined, pat.cookie)).status === 200);
 check('old session token is revoked', (await call('GET', '/api/patient/records', undefined, pat.cookie)).status === 401);

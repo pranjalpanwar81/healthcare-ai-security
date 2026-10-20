@@ -147,6 +147,10 @@ function CareTeams() {
     if (!form.patientId || !form.doctorId) { toast('Choose a patient and a clinician.'); return; }
     act('assign', async () => { await api('/admin/care-teams', { method: 'POST', body: form }); toast('Clinician assigned.'); setForm({ patientId: '', doctorId: '', days: '' }); ct.reload(); });
   };
+  const removeAccount = (p) => {
+    if (!window.confirm(`Remove ${p.name}'s account and all of their records? This cannot be undone.`)) return;
+    act(`del:${p.id}`, async () => { await api(`/admin/patients/${p.id}`, { method: 'DELETE' }); toast(`Removed ${p.name}.`); ct.reload(); });
+  };
   const remove = (patientId, doctorId) => act(`${patientId}:${doctorId}`, async () => { await api('/admin/care-teams', { method: 'DELETE', body: { patientId, doctorId } }); toast('Clinician removed from the care team.'); ct.reload(); });
 
   return (
@@ -176,7 +180,8 @@ function CareTeams() {
         <ul className="list">
           {patients.map((p) => (
             <li key={p.id} className="spread" style={{ alignItems: 'flex-start' }}>
-              <span className="row"><span className="avatar" aria-hidden="true">{initials(p.name)}</span><strong>{p.name}</strong></span>
+              <span className="row"><span className="avatar" aria-hidden="true">{initials(p.name)}</span><strong>{p.name}</strong>
+                {p.removable && <button type="button" className="btn btn-sm btn-ghost" onClick={() => removeAccount(p)} disabled={busy === `del:${p.id}`} aria-label={`Remove ${p.name}'s account`}><Trash2 size={16} aria-hidden="true" />Remove account</button>}</span>
               <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                 {p.team.length === 0 && <span className="muted small">No clinicians assigned</span>}
                 {p.team.map((t) => (

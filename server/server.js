@@ -511,6 +511,7 @@ app.get('/api/admin/care-teams', adminOnly, (req, res) => {
     patients: d.users.filter((u) => u.role === 'patient').map((p) => ({
       id: p.id,
       name: p.name,
+      removable: !p.demo,
       team: d.consents.filter((c) => c.patientId === p.id && (!c.expiresAt || Date.parse(c.expiresAt) > now))
         .map((c) => ({ doctorId: c.doctorId, doctorName: findUser(c.doctorId)?.name, expiresAt: c.expiresAt, assignedBy: c.assignedBy || null })),
     })),
@@ -535,6 +536,22 @@ app.delete('/api/admin/care-teams', adminOnly, (req, res) => {
   store.save();
   if (removed) audit.record({ actor: req.user, action: 'careteam.remove', patientId, target: doctorId, ip: ipOf(req), detail: { doctor: findUser(doctorId)?.name } });
   res.json({ ok: true, removed });
+});
+
+// Remove a patient account and everything attached to it. Ledger entries stay, because the ledger is append-only.
+app.delete('/api/admin/patients/:id', adminOnly, (req, res) => {
+  const d = db();
+  const p = findUser(req.params.id);
+  if (!p || p.role !== 'patient') return fail(res, 404, 'Patient not found.');
+  if (p.demo) return fail(res, 400, 'Initial accounts cannot be removed.');
+  const counts = { records: d.records.filter((r) => r.patientId === p.id).length };
+  d.users = d.users.filter((u) => u.id !== p.id);
+  d.records = d.records.filter((r) => r.patientId !== p.id);
+  d.consents = d.consents.filter((c) => c.patientId !== p.id);
+  d.breakGlass = d.breakGlass.filter((b) => b.patientId !== p.id);
+  store.save();
+  audit.record({ actor: req.user, action: 'patient.delete', target: p.id, ip: ipOf(req), detail: { name: p.name, ...counts } });
+  return res.json({ ok: true, removed: p.name, ...counts });
 });
 
 app.delete('/api/admin/networks', adminOnly, (req, res) => {
