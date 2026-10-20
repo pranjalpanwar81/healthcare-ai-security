@@ -9,7 +9,7 @@ import { explain } from './lib/xai.js';
 const DEV_PASSWORD = 'HealthGuard2026';
 function passwordFor(email) {
   let map = {};
-  try { map = JSON.parse(process.env.SEED_PASSWORDS || '{}'); } catch { map = {}; }
+  try { map = JSON.parse((process.env.SEED_PASSWORDS || '{}').trim()); } catch { map = {}; }
   if (map[email]) return map[email];
   if (process.env.NODE_ENV?.trim() === 'production' || process.env.VERCEL) throw new Error(`SEED_PASSWORDS has no entry for ${email}`);
   return DEV_PASSWORD;
