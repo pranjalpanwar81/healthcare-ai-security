@@ -58,6 +58,7 @@ Vercel (see the next section). Render config was removed.
 - `ml/` holds the original TensorFlow pipeline from v1 (not used by the v2 server).
 
 ## Log
+- 2026-10-21: Premium visual layer (v3 block at the end of styles.css): Fraunces display headings, warm ivory canvas, evergreen and brass, dark sidebar, dark landing hero, entrance motion.
 - 2026-10-21: Care teams assigned by hospital, patient reporting, app shell redesign, 78-check suite, fixed malformed-JSON 500 and public top bar showing Sign in while signed in.
 - 2026-10-21: Deployed to Vercel (serverless API, stable demo ids).
 - 2026-10-21: v2 rebuild. Security core, explainable model, patient/clinic/security UIs, deploy.

@@ -1,24 +1,25 @@
 {
-    "name":  "healthcare-ai-security",
-    "private":  true,
-    "version":  "2.0.0",
-    "type":  "module",
-    "scripts":  {
-                    "dev":  "vite --host 0.0.0.0",
-                    "build":  "vite build",
-                    "preview":  "vite preview",
-                    "start":  "npm --prefix server start"
-                },
-    "dependencies":  {
-                         "@fontsource/atkinson-hyperlegible":  "^5.2.8",
-                         "dotenv":  "^16.6.1",
-                         "express":  "^4.22.3",
-                         "jsonwebtoken":  "^9.0.3",
-                         "lucide-react":  "^1.48.0",
-                         "react":  "^19.3.0",
-                         "react-dom":  "^19.3.0",
-                         "react-router-dom":  "^7.18.4",
-                         "vite":  "^8.3.0",
-                         "@vitejs/plugin-react":  "^5.0.0"
-                     }
+    "name": "healthcare-ai-security",
+    "private": true,
+    "version": "2.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "vite --host 0.0.0.0",
+        "build": "vite build",
+        "preview": "vite preview",
+        "start": "npm --prefix server start"
+    },
+    "dependencies": {
+        "@fontsource-variable/fraunces": "^5.3.0",
+        "@fontsource/atkinson-hyperlegible": "^5.2.8",
+        "@vitejs/plugin-react": "^5.0.0",
+        "dotenv": "^16.6.1",
+        "express": "^4.22.3",
+        "jsonwebtoken": "^9.0.3",
+        "lucide-react": "^1.48.0",
+        "react": "^19.3.0",
+        "react-dom": "^19.3.0",
+        "react-router-dom": "^7.18.4",
+        "vite": "^8.3.0"
+    }
 }

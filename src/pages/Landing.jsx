@@ -29,13 +29,13 @@ export default function Landing() {
   usePageTitle();
   const max = 2.67;
   return (
-    <div className="public">
+    <div className="public public-dark">
       <TopBar>
         <Link to="/how-it-works" className="btn btn-ghost btn-sm">How it works</Link>
         <Link to="/signin" className="btn btn-sm">Sign in</Link>
       </TopBar>
       <main id="main">
-        <section className="container hero-v2">
+        <section className="hero-dark"><div className="container hero-v2">
           <div className="hero-grid">
             <div>
               <span className="eyebrow-line"><ShieldCheck size={18} aria-hidden="true" />Secure, explainable health records</span>
@@ -45,7 +45,12 @@ export default function Landing() {
                 <Link to="/signin?portal=patient" className="btn btn-primary">I am a patient <ArrowRight size={18} aria-hidden="true" /></Link>
                 <Link to="/signin?portal=clinician" className="btn"><Stethoscope size={18} aria-hidden="true" />I work at the hospital</Link>
               </div>
-              <p className="small muted" style={{ marginTop: 16 }}>Demo system with fictional patients. Not for real medical use.</p>
+              <div className="trust-strip">
+                <span><LockKeyhole size={16} aria-hidden="true" />AES-256-GCM per record</span>
+                <span><ScrollText size={16} aria-hidden="true" />Tamper-evident ledger</span>
+                <span><Wifi size={16} aria-hidden="true" />Hospital-network gate</span>
+              </div>
+              <p className="small muted" style={{ marginTop: 14 }}>Demo system with fictional patients. Not for real medical use.</p>
             </div>
 
             <div className="hero-stage" aria-label="Example of a risk check explanation and an access history">
@@ -76,9 +81,9 @@ export default function Landing() {
               </div>
             </div>
           </div>
-        </section>
+        </div></section>
 
-        <section className="container" aria-labelledby="tech-title" style={{ paddingBlock: '24px 72px' }}>
+        <section className="container" aria-labelledby="tech-title" style={{ paddingBlock: '88px 72px' }}>
           <div className="section-head">
             <h2 id="tech-title">Seven layers between a record and the wrong person</h2>
             <p>Each one is running in this demo. <Link to="/how-it-works">See the risk model</Link></p>
