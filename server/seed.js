@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 // Demo data. All people are fictional. Every value passes through the same sealing and audit paths as live data.
 import { data, save } from './lib/store.js';
-import { seal, blindIndex, hashPassword, randomId } from './lib/crypto.js';
+import { seal, open, blindIndex, hashPassword, randomId } from './lib/crypto.js';
 import { record } from './lib/audit.js';
 import { quickRisk } from './lib/clinical.js';
 
@@ -76,6 +76,37 @@ export function syncSeedPasswords() {
   return true;
 }
 
+/**
+ * One-time migration (2026-10-22): demo records created before the real-data models carry the old
+ * synthetic readings. Re-seal them with the matching readings for the new models. Nothing else changes.
+ */
+export function migrateReadings() {
+  const db = data();
+  if ((db.meta.readingsVersion || 1) >= 2) return false;
+  for (const [email, list] of Object.entries(visits)) {
+    const patient = db.users.find((u) => u.emailIndex === blindIndex(email));
+    if (!patient) continue;
+    // Seeded visits, oldest first, pair with this patient's seeded records in creation order.
+    const ordered = [...list].sort((a, b) => b.ago - a.ago);
+    const recs = db.records.filter((r) => r.patientId === patient.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    let next = 0;
+    for (const rec of recs) {
+      const body = open(rec.sealed, patient.id);
+      const match = ordered[next]?.title === body.title ? ordered[next] : null;
+      if (match) next += 1;
+      if (!match || !body.vitals || 'pregnancies' in body.vitals || 'restingBP' in body.vitals) continue;
+      body.vitals = match.vitals;
+      body.assessment = quickRisk(match.vitals);
+      if (match.diagnosis) body.diagnosis = match.diagnosis;
+      if (match.notes) body.notes = match.notes;
+      rec.sealed = seal(body, patient.id);
+    }
+  }
+  db.meta.readingsVersion = 2;
+  save();
+  return true;
+}
+
 export function seedDemo() {
   const db = data();
   const users = people.map((p) => {
@@ -114,6 +145,7 @@ export function seedDemo() {
   grant('farhan@healthguard.demo', doctors[1]);
   grant('rohan@healthguard.demo', doctors[1], 30);
 
+  data().meta.readingsVersion = 2;
   save();
 
   // A short, genuine history in the ledger so the access timeline is not empty on first visit.
