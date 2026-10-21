@@ -108,7 +108,7 @@ function train() {
     }
   }
 
-  const model = { W, b, mean, std, z };
+  const model = { W, b, mean, std, z, trainSet, testSet };
   const confusion = Array.from({ length: k }, () => Array(k).fill(0));
   const absContrib = Array(d).fill(0);
   for (const r of testSet) {
@@ -156,7 +156,13 @@ function probs(model, zx) {
 const model = train();
 export const modelCard = () => model.card;
 
-function cleanInput(input) {
+// Shared with the neural model so both learn from and are tested on exactly the same cohort.
+export const cohort = () => ({ train: model.trainSet, test: model.testSet, z: model.z, mean: model.mean });
+export const linearProbs = (zx) => probs(model, zx);
+/** Exact linear attributions for class c (contribution to that class's log-odds vs an average patient). */
+export const linearAttributions = (zx, c) => FEATURES.map((_, j) => model.W[c][j] * zx[j]);
+
+export function cleanInput(input) {
   return FEATURES.map((f) => {
     const raw = Number(input?.[f.key]);
     if (!Number.isFinite(raw)) return null;
@@ -195,7 +201,7 @@ export function explain(input) {
   const drivers = contributions.filter((c) => c.impact > 0.15).slice(0, 3);
   const against = contributions.filter((c) => c.impact < -0.15).slice(0, 2);
   const cls = CLASSES[top];
-  const lower = (s) => s.split(' ').map((w) => (/[A-Z].*[A-Z]|^[A-Z][a-z]?\d/.test(w) ? w : w.toLowerCase())).join(' ');
+  const lower = (s) => s.split(' ').map((w) => (/[A-Z].*[A-Z]|^[A-Z][a-z]?\d|^[A-Z]-/.test(w) ? w : w.toLowerCase())).join(' ');
   let summary;
   if (cls.key === 'healthy') {
     summary = drivers.length

@@ -132,6 +132,11 @@ const sumImpact = xai.body.contributions.reduce((s, c) => s + c.impact, 0);
 check('attributions are finite numbers', Number.isFinite(sumImpact));
 check('probabilities sum to one', Math.abs(xai.body.probabilities.reduce((s, p) => s + p.probability, 0) - 1) < 1e-6);
 check('counterfactual offered for a flagged result', Array.isArray(xai.body.counterfactual?.changes));
+check('neural network is explained alongside', xai.body.neural?.prediction?.key && xai.body.neural.contributions.length === 12);
+check('SHAP values add up exactly to the neural output', xai.body.neural.faithfulness.error < 1e-9, xai.body.neural.faithfulness.error.toExponential(1));
+check('integrated gradients agree with SHAP within 2 points', xai.body.neural.faithfulness.integratedGradientsError < 0.02);
+check('agreement between models is reported', ['strong', 'partial', 'disagree'].includes(xai.body.agreement?.level), xai.body.agreement?.level);
+check('model card covers both models', card.body.neural?.accuracy > 0.9 && card.body.neural.comparison.outcomeAgreement > 0.9, `nn ${card.body.neural?.accuracy?.toFixed(3)}`);
 check('healthy readings flag nothing', (await call('POST', '/api/xai/try', { vitals: { age: 30, bmi: 22, systolic: 114, diastolic: 74, heartRate: 70, temperature: 36.6, glucose: 86, hba1c: 5, wbc: 6.5, crp: 2, coughDays: 0, fatigue: 2 } })).body.prediction?.key === 'healthy');
 
 section('Transparency and reporting');

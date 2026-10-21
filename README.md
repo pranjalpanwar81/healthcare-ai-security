@@ -22,6 +22,18 @@ Why the network check uses IP addresses: browsers cannot read the Wi-Fi name, an
 
 ## Explainable risk assessment
 
+Two models run on every risk check, so each result is explained both ways:
+
+| | Interpretable model | Neural network |
+|---|---|---|
+| Model | Multinomial logistic regression | Multilayer perceptron, 12 → 32 → 16 → 5 |
+| Explanation | Exact weights × measurements (linear SHAP) | Exact Shapley values over all 4,096 coalitions, checked with integrated gradients |
+| Held-out accuracy | about 98% | about 99% |
+
+An agreement banner reports whether both models reach the same outcome and share their main factors. Disagreement is flagged for clinical review. The Shapley values are verified to sum exactly to the neural network's output on every request (`server/lib/neural.js`).
+
+### Interpretable model
+
 - **Interpretable by design.** A multinomial logistic regression over 12 routine measurements (age, BMI, blood pressure, heart rate, temperature, fasting glucose, HbA1c, white cell count, CRP, cough duration, fatigue) predicts one of five outcomes: no condition, hypertension risk, diabetes risk, possible bacterial infection, possible viral infection.
 - **Exact attributions.** Because the model is additive, each measurement's contribution to a prediction is computed exactly (linear SHAP). It is not a post-hoc approximation.
 - **Plain-language summary** naming the out-of-range readings that drove the result.
@@ -60,5 +72,4 @@ Deployed on Vercel: `vercel.json` serves the Vite build and runs `api/index.js` 
 server/            Express API, security modules, explainable model, seed data, tests
 src/               React app (patient, clinic and security consoles)
 context/           Running project context and decisions
-ml/                Original TensorFlow research pipeline (v1)
 ```

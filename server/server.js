@@ -10,6 +10,7 @@ import * as audit from './lib/audit.js';
 import { seal, open, rewrap, rotateKek, activeKekVersion, restoreKekVersion, blindIndex, hashPassword, verifyPassword, randomId, jwtSecret } from './lib/crypto.js';
 import { checkNetwork, enrollNetwork, trustedNetworks, removeNetwork } from './lib/network.js';
 import { explain, modelCard, FEATURES } from './lib/xai.js';
+import { explainAll, neuralCard } from './lib/neural.js';
 import { startMonitoring } from './lib/anomaly.js';
 import { seedDemo, syncSeedPasswords } from './seed.js';
 
@@ -195,10 +196,10 @@ app.post('/api/network/enroll', limit('enroll', 5, 15 * 60 * 1000), (req, res) =
   return res.json({ ok: true, cidr });
 });
 
-app.get('/api/xai/model-card', (req, res) => res.json({ ...modelCard(), features: FEATURES }));
+app.get('/api/xai/model-card', (req, res) => res.json({ ...modelCard(), features: FEATURES, neural: neuralCard() }));
 
 // Public sandbox: explains sample readings. Nothing is stored and no identity is attached.
-app.post('/api/xai/try', limit('xai-try', 30, 60 * 1000), (req, res) => res.json(explain(req.body?.vitals || {})));
+app.post('/api/xai/try', limit('xai-try', 30, 60 * 1000), (req, res) => res.json(explainAll(req.body?.vitals || {})));
 
 // ---------- Auth ----------
 app.post('/api/auth/register', limit('register', 10, 60 * 60 * 1000), (req, res) => {
@@ -289,7 +290,7 @@ app.get('/api/auth/me', auth, (req, res) => {
 
 // ---------- Explainable assessment (any signed-in user) ----------
 app.post('/api/xai/explain', auth, (req, res) => {
-  const result = explain(req.body?.vitals || {});
+  const result = explainAll(req.body?.vitals || {});
   audit.record({ actor: req.user, action: 'xai.explain', patientId: req.user.role === 'patient' ? req.user.id : null, outcome: 'success', ip: ipOf(req), detail: { result: result.prediction.key } });
   res.json(result);
 });
@@ -306,7 +307,7 @@ app.get('/api/patient/records', patientOnly, (req, res) => {
 app.get('/api/patient/explanation', patientOnly, (req, res) => {
   const vitals = latestVitals(patientRecords(req.user.id));
   if (!vitals) return res.json({ available: false });
-  return res.json({ available: true, vitals, ...explain(vitals) });
+  return res.json({ available: true, vitals, ...explainAll(vitals) });
 });
 
 app.get('/api/patient/access-log', patientOnly, (req, res) => {
@@ -426,7 +427,7 @@ app.post('/api/doctor/patients/:id/records', clinical, role('doctor'), (req, res
 app.post('/api/doctor/patients/:id/explain', clinical, role('doctor'), (req, res) => {
   const p = findUser(req.params.id);
   if (!p || !accessFor(req.user.id, p.id).allowed) return fail(res, 403, 'No access to this patient.');
-  const result = explain(req.body?.vitals || {});
+  const result = explainAll(req.body?.vitals || {});
   audit.record({ actor: req.user, action: 'xai.explain', patientId: p.id, ip: ipOf(req), detail: { result: result.prediction.key } });
   return res.json(result);
 });

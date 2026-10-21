@@ -56,43 +56,68 @@ export default function HowItWorks() {
           </div>
         </section>
 
-        <section style={{ marginTop: 40 }} aria-labelledby="card-title">
-          <h2 id="card-title">Model card</h2>
+        <section style={{ marginTop: 48 }} aria-labelledby="card-title">
+          <div className="section-head">
+            <h2 id="card-title">Two models, two kinds of explanation</h2>
+            <p>An interpretable model explained exactly, and a neural network explained with Shapley values.</p>
+          </div>
           {card.loading && <Loading />}
-          {card.data && (
-            <div className="grid-2" style={{ marginTop: 12 }}>
-              <div className="card stack">
-                <dl className="kv">
-                  <dt>Model</dt><dd>{card.data.type}</dd>
-                  <dt>Explanations</dt><dd>{card.data.explanation}</dd>
-                  <dt>Trained on</dt><dd>{card.data.trainedOn}</dd>
-                  <dt>Tested on</dt><dd>{card.data.testedOn}</dd>
-                  <dt>Accuracy</dt><dd>{pct(card.data.accuracy)}</dd>
-                  <dt>Macro F1</dt><dd>{pct(card.data.macroF1)}</dd>
+          {card.data && (() => {
+            const lin = card.data;
+            const nn = card.data.neural;
+            return (
+              <div className="stack" style={{ '--stack': '20px' }}>
+                <div className="card">
+                  <div className="table-wrap">
+                    <table className="compare-table">
+                      <caption className="sr-only">Comparison of the two models on held-out data</caption>
+                      <thead><tr><th scope="col"> </th><th scope="col">Interpretable model</th><th scope="col">Neural network</th></tr></thead>
+                      <tbody>
+                        <tr><th scope="row">Model</th><td>Multinomial logistic regression</td><td>Multilayer perceptron, 12 → 32 → 16 → 5</td></tr>
+                        <tr><th scope="row">Parameters</th><td>{lin.features.length * lin.classes.length + lin.classes.length}</td><td>{nn.parameters.toLocaleString('en-IN')}</td></tr>
+                        <tr><th scope="row">How it is explained</th><td>Exact weights × measurements</td><td>Exact Shapley values (SHAP), checked with integrated gradients</td></tr>
+                        <tr><th scope="row">Accuracy</th><td>{pct(lin.accuracy)}</td><td>{pct(nn.accuracy)}</td></tr>
+                        <tr><th scope="row">Macro F1</th><td>{pct(lin.macroF1)}</td><td>{pct(nn.macroF1)}</td></tr>
+                        {lin.perClass.map((c, i) => (
+                          <tr key={c.key}><th scope="row">Recall: {c.label}</th><td>{pct(c.recall)}</td><td>{pct(nn.perClass[i].recall)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="small muted" style={{ margin: '12px 0 0' }}>{lin.trainedOn}; tested on {lin.testedOn}. Both models use exactly the same data.</p>
+                </div>
+
+                <dl className="stats">
+                  <div className="stat"><div><dt>Same outcome from both models</dt><dd>{pct(nn.comparison.outcomeAgreement)}</dd></div></div>
+                  <div className="stat"><div><dt>Shared top-3 factors</dt><dd>{pct(nn.comparison.topFactorOverlap)}</dd></div></div>
+                  <div className="stat"><div><dt>SHAP faithfulness</dt><dd>Exact</dd></div></div>
                 </dl>
-                <div className="table-wrap">
-                  <table>
-                    <caption className="sr-only">Results per outcome on held-out data</caption>
-                    <thead><tr><th scope="col">Outcome</th><th scope="col">Precision</th><th scope="col">Recall</th><th scope="col">Cases</th></tr></thead>
-                    <tbody>{card.data.perClass.map((c) => <tr key={c.key}><th scope="row">{c.label}</th><td>{pct(c.precision)}</td><td>{pct(c.recall)}</td><td>{c.support}</td></tr>)}</tbody>
-                  </table>
+
+                <div className="grid-2">
+                  {[['What the interpretable model relies on', lin.globalImportance], ['What the neural network relies on', nn.globalImportance]].map(([title, list]) => (
+                    <div className="card stack" key={title}>
+                      <h3>{title}</h3>
+                      <p className="small muted" style={{ margin: 0 }}>Average share of each measurement in the model's decisions on held-out patients.</p>
+                      {list.map((g) => (
+                        <div className="prob" key={g.key}>
+                          <span>{g.label}</span>
+                          <span className="prob-track" aria-hidden="true"><i style={{ width: `${(g.share / list[0].share) * 100}%` }} /></span>
+                          <span style={{ textAlign: 'right' }}>{Math.round(g.share * 100)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="card stack">
+                  <h3>Why two models?</h3>
+                  <p style={{ margin: 0 }}>The interpretable model's explanation is the model itself, so it is exact but limited to straight-line effects. The neural network can learn combinations, such as high CRP together with high white cells, but cannot be read directly. Shapley values split its prediction fairly among the measurements and always add up exactly to what it predicted. When the two models disagree, the result is flagged for extra care.</p>
+                  <h3 style={{ marginTop: 8 }}>Limitations</h3>
+                  <ul style={{ margin: 0, paddingLeft: 20 }}>{lin.limitations.map((l) => <li key={l}>{l}</li>)}</ul>
                 </div>
               </div>
-              <div className="card stack">
-                <h3>What the model relies on most</h3>
-                <p className="small muted" style={{ margin: 0 }}>Average share of each measurement in the model's decisions across the test set.</p>
-                {card.data.globalImportance.map((g) => (
-                  <div className="prob" key={g.key}>
-                    <span>{g.label}</span>
-                    <span className="prob-track" aria-hidden="true"><i style={{ width: `${(g.share / card.data.globalImportance[0].share) * 100}%` }} /></span>
-                    <span style={{ textAlign: 'right' }}>{Math.round(g.share * 100)}%</span>
-                  </div>
-                ))}
-                <h3 style={{ marginTop: 12 }}>Limitations</h3>
-                <ul style={{ margin: 0, paddingLeft: 20 }}>{card.data.limitations.map((l) => <li key={l}>{l}</li>)}</ul>
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </section>
       </main>
     </div>

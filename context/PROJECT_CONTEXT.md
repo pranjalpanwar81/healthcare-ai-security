@@ -21,6 +21,13 @@ One Node service. Express serves the API under `/api` and the built React app fr
 - `server/lib/store.js`: a JSON file at `server/data/healthguard.json` locally (gitignored). On Vercel, the same document lives in the private Blob store `healthguard-data` at `healthguard/db.json` (`BLOB_READ_WRITE_TOKEN`), refreshed before each API request and flushed before each response. Seeds initial accounts on first boot (`server/seed.js`).
 - Frontend `src/`: React 19 + React Router. Design world "Clinical Label" (UI-Lab niche world 18): Atkinson Hyperlegible, white/ink, teal brand, status = icon + word + colour. Text-size and dark-mode toggles, skip link, focus moved to h1 on navigation, 44px targets.
 
+## Two-model explainability (2026-10-21)
+`server/lib/neural.js`: a multilayer perceptron (12-32-16-5, ReLU, 1,029 parameters) trained with Adam (20 epochs) on the same cohort as the logistic regression. It reaches about 99% held-out accuracy versus 98% for the regression.
+- Explained with exact interventional Shapley values: all 4,096 coalitions against 16 fixed background patients, about 0.3 s per explanation. They sum to f(x) - E[f] (error about 1e-16, reported as the faithfulness check).
+- Integrated gradients (48 steps, average-patient baseline) as a cross-check, with the completeness error reported.
+- `explainAll()` returns the linear result plus `neural` plus `agreement` (same outcome, shared top-3 factors; level strong, partial or disagree). The model card includes both models: outcome agreement about 98.6%, top-factor overlap about 71%.
+- Cold start trains both models in about 2.6 s.
+
 ## Why the Wi-Fi check changed
 v1 trusted an `x-wifi-ssid` header sent by the browser, which any client can forge, and browsers cannot read the SSID anyway. v2 uses the egress IP of the hospital network as seen by the server. Kalaza Care never implemented Wi-Fi auth (it stayed on that project's backlog), so there was no pattern to copy.
 
@@ -40,7 +47,7 @@ Patients do not choose their doctors. The security officer (hospital administrat
 Dev defaults: enrol code `HOSPITAL-IT-2026`, doctor code `DOCTOR-2026`.
 
 ## Run locally
-`npm install && npm --prefix server install`, then `npm --prefix server start` (API on 3001) and `npm run dev` (Vite on 5173, proxies /api). Security test suite: `npm --prefix server test` (78 checks; run against a fresh DATA_DIR on another port).
+`npm install && npm --prefix server install`, then `npm --prefix server start` (API on 3001) and `npm run dev` (Vite on 5173, proxies /api). Security test suite: `npm --prefix server test` (88 checks; run against a fresh DATA_DIR on another port).
 
 ## Deployment
 Vercel (see the next section). Render config was removed.
@@ -54,12 +61,12 @@ Vercel (see the next section). Render config was removed.
 ## Open items / next
 - Persistent database (Postgres) instead of the JSON file.
 - TOTP second factor for clinicians.
-- Optional LLM features from v1 (`server/langchainService.js` kept, not wired into v2 routes).
-- `ml/` holds the original TensorFlow pipeline from v1 (not used by the v2 server).
+- Optional: an LLM layer (e.g. Gemini) for plain-language narratives on top of the exact model numbers. v1's LangChain code and the `ml/` TensorFlow pipeline were removed on 2026-10-21 and remain in git history and the `baseline-original` tag.
 
 ## Log
 - 2026-10-21: Premium visual layer (v3 block at the end of styles.css): Fraunces display headings, warm ivory canvas, evergreen and brass, dark sidebar, dark landing hero, entrance motion.
 - 2026-10-21: Care teams assigned by hospital, patient reporting, app shell redesign, 78-check suite, fixed malformed-JSON 500 and public top bar showing Sign in while signed in.
+- 2026-10-21: Neural network with SHAP and integrated gradients beside the interpretable model; agreement banner and model switch in the UI; dead code removed (LangChain service, ml/, old CSS and the Tabs component; server deps cut to 4).
 - 2026-10-21: Easy passwords set at Harsh's request (in the SEED_PASSWORDS secret). `syncSeedPasswords()` re-applies the secret to the listed accounts whenever it changes.
 - 2026-10-21: Shared Blob store, per-account seed passwords via secret, demo panel removed, LHBC networks trusted.`n- 2026-10-21: Deployed to Vercel (serverless API, stable ids).
 - 2026-10-21: v2 rebuild. Security core, explainable model, patient/clinic/security UIs, deploy.

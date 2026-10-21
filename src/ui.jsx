@@ -179,18 +179,6 @@ export function AppShell({ nav, label, network, children }) {
   );
 }
 
-export function Tabs({ items, label }) {
-  return (
-    <nav className="tabs" aria-label={label}>
-      <div className="container tabs-inner">
-        {items.map(({ to, label: text, icon: Icon, end }) => (
-          <NavLink key={to} to={to} end={end} className="tab"><Icon size={18} aria-hidden="true" />{text}</NavLink>
-        ))}
-      </div>
-    </nav>
-  );
-}
-
 export function Modal({ open, onClose, title, children }) {
   const ref = useRef(null);
   useEffect(() => {
