@@ -1,24 +1,87 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Play } from 'lucide-react';
+import { Database, Play, ShieldCheck, ShieldX } from 'lucide-react';
 import { api } from '../api.js';
-import { Loading, Notice, TopBar, useAsync, usePageTitle } from '../ui.jsx';
+import { Loading, Notice, TopBar, usePageTitle } from '../ui.jsx';
 import Explanation from '../components/Explanation.jsx';
-import VitalsForm, { toNumbers } from '../components/VitalsForm.jsx';
+import VitalsForm, { toNumbers, useModelCards } from '../components/VitalsForm.jsx';
 
 const SAMPLES = {
-  'High blood pressure': { age: 61, bmi: 29, systolic: 158, diastolic: 98, heartRate: 80, temperature: 36.7, glucose: 102, hba1c: 5.7, wbc: 7.2, crp: 4, coughDays: 0, fatigue: 4 },
-  'Raised blood sugar': { age: 49, bmi: 32, systolic: 132, diastolic: 84, heartRate: 81, temperature: 36.8, glucose: 168, hba1c: 8.1, wbc: 7.6, crp: 6, coughDays: 0, fatigue: 5 },
-  'Fever and cough': { age: 36, bmi: 24, systolic: 118, diastolic: 76, heartRate: 104, temperature: 38.9, glucose: 101, hba1c: 5.3, wbc: 16, crp: 110, coughDays: 7, fatigue: 7 },
-  Healthy: { age: 30, bmi: 22, systolic: 114, diastolic: 74, heartRate: 70, temperature: 36.6, glucose: 86, hba1c: 5.0, wbc: 6.5, crp: 2, coughDays: 0, fatigue: 2 },
+  'Chest pain on exercise': { age: 62, sex: 1, chestPain: 4, restingBP: 150, cholesterol: 270, fastingSugar: 0, restingECG: 2, maxHeartRate: 118, exerciseAngina: 1, stDepression: 2.2, stSlope: 2, vessels: 2, thal: 7 },
+  'High blood sugar': { age: 48, pregnancies: 3, glucose: 182, bloodPressure: 84, skinThickness: 34, insulin: 220, bmi: 35.2, pedigree: 0.8 },
+  'Healthy adult': { age: 34, sex: 0, chestPain: 3, restingBP: 116, cholesterol: 182, fastingSugar: 0, restingECG: 0, maxHeartRate: 182, exerciseAngina: 0, stDepression: 0, stSlope: 1, vessels: 0, thal: 3, pregnancies: 1, glucose: 92, bloodPressure: 70, skinThickness: 22, insulin: 90, bmi: 22.4, pedigree: 0.25 },
 };
 
 const pct = (x) => `${(x * 100).toFixed(1)}%`;
+const auc = (m) => `${m.mean.toFixed(3)} ± ${m.sd.toFixed(3)}`;
+
+function ModelCard({ c }) {
+  const rows = Object.entries(c.card.comparison);
+  return (
+    <section className="card stack" aria-labelledby={`mc-${c.key}`}>
+      <div className="card-head">
+        <div>
+          <h3 id={`mc-${c.key}`} style={{ fontFamily: 'var(--display)', fontSize: '1.5rem' }}>{c.label}</h3>
+          <p><Database size={14} aria-hidden="true" /> {c.source}. {c.card.positives} of {c.card.patients} patients have the condition; {c.card.train} used for training, {c.card.test} held out for the final test.</p>
+        </div>
+      </div>
+
+      <div className="table-wrap">
+        <table className="compare-table">
+          <caption className="sr-only">Nested cross-validation results for {c.label}</caption>
+          <thead><tr><th scope="col">Model</th><th scope="col">ROC-AUC (5-fold, mean ± sd)</th><th scope="col">Recall</th><th scope="col">Brier score</th><th scope="col"><span className="sr-only">Role</span></th></tr></thead>
+          <tbody>
+            {rows.map(([key, r]) => (
+              <tr key={key}>
+                <th scope="row">{r.name}</th><td>{auc(r.cv.rocAuc)}</td><td>{pct(r.cv.recall.mean)}</td><td>{r.cv.brier.mean.toFixed(3)}</td>
+                <td>{key === c.selected.key ? <strong style={{ color: 'var(--brand)' }}>Selected</strong> : key === c.secondOpinion.key ? 'Second opinion' : ''}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="small muted" style={{ margin: 0 }}>{c.card.selectionRule}. Recall in this table uses a 0.5 cut-off.</p>
+
+      <dl className="stats three">
+        <div className="stat"><div><dt>Held-out ROC-AUC</dt><dd>{c.selected.test.rocAuc.toFixed(3)}</dd></div></div>
+        <div className="stat"><div><dt>Recall at tuned threshold ({pct(c.selected.threshold)})</dt><dd>{pct(c.selected.test.recall)}</dd></div></div>
+        <div className="stat"><div><dt>Precision / Brier</dt><dd>{pct(c.selected.test.precision)} / {c.selected.test.brier.toFixed(3)}</dd></div></div>
+      </dl>
+      <p className="small muted" style={{ margin: 0 }}>
+        The alert threshold comes from out-of-fold training predictions (Youden's J), never from the test set. At the default 0.5 cut-off, recall would be {pct(c.selected.testAtHalf.recall)}.
+        Second opinion ({c.secondOpinion.name}): held-out ROC-AUC {c.secondOpinion.test.rocAuc.toFixed(3)}.
+      </p>
+
+      <div className="grid-2">
+        <div className="stack" style={{ '--stack': '8px' }}>
+          <h4 style={{ margin: 0 }}>What the model relies on (mean |SHAP|)</h4>
+          {c.card.globalImportance.slice(0, 8).map((g) => (
+            <div className="prob" key={g.key}>
+              <span>{g.label}</span>
+              <span className="prob-track" aria-hidden="true"><i style={{ width: `${(g.share / c.card.globalImportance[0].share) * 100}%` }} /></span>
+              <span style={{ textAlign: 'right' }}>{Math.round(g.share * 100)}%</span>
+            </div>
+          ))}
+        </div>
+        <div className="stack" style={{ '--stack': '8px' }}>
+          <h4 style={{ margin: 0 }}>Fairness: held-out results by group</h4>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th scope="col">Group</th><th scope="col">Patients</th><th scope="col">ROC-AUC</th><th scope="col">Recall</th></tr></thead>
+              <tbody>{c.card.fairness.map((f) => <tr key={f.group}><th scope="row">{f.group}</th><td>{f.n}</td><td>{f.rocAuc.toFixed(2)}</td><td>{pct(f.recall)}</td></tr>)}</tbody>
+            </table>
+          </div>
+          <p className="small muted" style={{ margin: 0 }}>Small groups give wide uncertainty; gaps between groups are reported, not hidden.</p>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 export default function HowItWorks() {
   usePageTitle('How it works');
-  const card = useAsync(() => api('/xai/model-card'), []);
-  const [vitals, setVitals] = useState(SAMPLES['High blood pressure']);
+  const cards = useModelCards();
+  const [vitals, setVitals] = useState(SAMPLES['Chest pain on exercise']);
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -31,21 +94,17 @@ export default function HowItWorks() {
   return (
     <div className="public">
       <TopBar><Link to="/signin" className="btn btn-sm">Sign in</Link></TopBar>
-      <main id="main" className="container">
+      <main id="main" className="container" style={{ paddingTop: 32 }}>
         <div className="page-head">
-          <h1>How the risk check explains itself</h1>
-          <p>The model is interpretable by design. Each result is broken down into exactly how much every measurement contributed, so doctors and patients can see why, not only what.</p>
+          <h1>Real clinical data, explained</h1>
+          <p>Two risk models trained on public clinical research datasets, chosen by a fair comparison of four algorithms, explained patient by patient with Shapley values, and cryptographically signed so they cannot be swapped.</p>
         </div>
 
         <section className="split" aria-labelledby="try-title">
           <div className="card stack">
-            <div className="card-head">
-              <div><h2 id="try-title">Try it with sample readings</h2><p>Nothing you enter here is saved.</p></div>
-            </div>
+            <div className="card-head"><div><h2 id="try-title">Try it with sample readings</h2><p>Nothing you enter here is saved.</p></div></div>
             <div className="row" role="group" aria-label="Sample patients">
-              {Object.keys(SAMPLES).map((k) => (
-                <button key={k} type="button" className="btn btn-sm" onClick={() => { setVitals(SAMPLES[k]); run(SAMPLES[k]); }}>{k}</button>
-              ))}
+              {Object.keys(SAMPLES).map((k) => <button key={k} type="button" className="btn btn-sm" onClick={() => { setVitals(SAMPLES[k]); run(SAMPLES[k]); }}>{k}</button>)}
             </div>
             <VitalsForm value={vitals} onChange={setVitals} idPrefix="try" />
             <button type="button" className="btn btn-primary" onClick={() => run()} disabled={busy}><Play size={18} aria-hidden="true" />{busy ? 'Checking…' : 'Run the risk check'}</button>
@@ -56,68 +115,33 @@ export default function HowItWorks() {
           </div>
         </section>
 
-        <section style={{ marginTop: 48 }} aria-labelledby="card-title">
+        <section style={{ marginTop: 48 }} aria-labelledby="cards-title">
           <div className="section-head">
-            <h2 id="card-title">Two models, two kinds of explanation</h2>
-            <p>An interpretable model explained exactly, and a neural network explained with Shapley values.</p>
+            <h2 id="cards-title">Model cards</h2>
+            <p>How each model was chosen and how well it performs on patients it never saw.</p>
           </div>
-          {card.loading && <Loading />}
-          {card.data && (() => {
-            const lin = card.data;
-            const nn = card.data.neural;
-            return (
-              <div className="stack" style={{ '--stack': '20px' }}>
-                <div className="card">
-                  <div className="table-wrap">
-                    <table className="compare-table">
-                      <caption className="sr-only">Comparison of the two models on held-out data</caption>
-                      <thead><tr><th scope="col"> </th><th scope="col">Interpretable model</th><th scope="col">Neural network</th></tr></thead>
-                      <tbody>
-                        <tr><th scope="row">Model</th><td>Multinomial logistic regression</td><td>Multilayer perceptron, 12 → 32 → 16 → 5</td></tr>
-                        <tr><th scope="row">Parameters</th><td>{lin.features.length * lin.classes.length + lin.classes.length}</td><td>{nn.parameters.toLocaleString('en-IN')}</td></tr>
-                        <tr><th scope="row">How it is explained</th><td>Exact weights × measurements</td><td>Exact Shapley values (SHAP), checked with integrated gradients</td></tr>
-                        <tr><th scope="row">Accuracy</th><td>{pct(lin.accuracy)}</td><td>{pct(nn.accuracy)}</td></tr>
-                        <tr><th scope="row">Macro F1</th><td>{pct(lin.macroF1)}</td><td>{pct(nn.macroF1)}</td></tr>
-                        {lin.perClass.map((c, i) => (
-                          <tr key={c.key}><th scope="row">Recall: {c.label}</th><td>{pct(c.recall)}</td><td>{pct(nn.perClass[i].recall)}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  <p className="small muted" style={{ margin: '12px 0 0' }}>{lin.trainedOn}; tested on {lin.testedOn}. Both models use exactly the same data.</p>
-                </div>
-
-                <dl className="stats">
-                  <div className="stat"><div><dt>Same outcome from both models</dt><dd>{pct(nn.comparison.outcomeAgreement)}</dd></div></div>
-                  <div className="stat"><div><dt>Shared top-3 factors</dt><dd>{pct(nn.comparison.topFactorOverlap)}</dd></div></div>
-                  <div className="stat"><div><dt>SHAP faithfulness</dt><dd>Exact</dd></div></div>
-                </dl>
-
-                <div className="grid-2">
-                  {[['What the interpretable model relies on', lin.globalImportance], ['What the neural network relies on', nn.globalImportance]].map(([title, list]) => (
-                    <div className="card stack" key={title}>
-                      <h3>{title}</h3>
-                      <p className="small muted" style={{ margin: 0 }}>Average share of each measurement in the model's decisions on held-out patients.</p>
-                      {list.map((g) => (
-                        <div className="prob" key={g.key}>
-                          <span>{g.label}</span>
-                          <span className="prob-track" aria-hidden="true"><i style={{ width: `${(g.share / list[0].share) * 100}%` }} /></span>
-                          <span style={{ textAlign: 'right' }}>{Math.round(g.share * 100)}%</span>
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="card stack">
-                  <h3>Why two models?</h3>
-                  <p style={{ margin: 0 }}>The interpretable model's explanation is the model itself, so it is exact but limited to straight-line effects. The neural network can learn combinations, such as high CRP together with high white cells, but cannot be read directly. Shapley values split its prediction fairly among the measurements and always add up exactly to what it predicted. When the two models disagree, the result is flagged for extra care.</p>
-                  <h3 style={{ marginTop: 8 }}>Limitations</h3>
-                  <ul style={{ margin: 0, paddingLeft: 20 }}>{lin.limitations.map((l) => <li key={l}>{l}</li>)}</ul>
-                </div>
+          {!cards && <Loading />}
+          {cards && (
+            <div className="stack" style={{ '--stack': '22px' }}>
+              <Notice tone={cards.integrity.ok ? 'ok' : 'alert'} title={cards.integrity.ok ? 'Models verified' : 'Model integrity check failed'}>
+                {cards.integrity.ok
+                  ? <>Every model file matches its SHA-256 hash in a manifest signed with Ed25519 (key {cards.integrity.keyFingerprint}, signed {new Date(cards.integrity.signedAt).toLocaleDateString('en-IN')}), and reproduces the training library's predictions to within 0.000001.</>
+                  : cards.integrity.reason}
+              </Notice>
+              {cards.conditions.map((c) => <Fragment key={c.key}><ModelCard c={c} /></Fragment>)}
+              <div className="card stack">
+                <h3>Method in brief</h3>
+                <ul style={{ margin: 0, paddingLeft: 20 }}>
+                  <li>Logistic regression, random forest, XGBoost and a neural network were compared with nested, stratified 5-fold cross-validation (inner grid search on ROC-AUC).</li>
+                  <li>The best model per condition is refit on the training split and tested once on a 20% hold-out set. A model from a different family gives a second opinion on every result.</li>
+                  <li>Explanations are exact Shapley values of the predicted risk, computed over every combination of readings against a fixed sample of training patients, and checked to add up to the prediction.</li>
+                  <li>Readings outside the 1st to 99th percentile of the training data are flagged as less certain.</li>
+                  <li>The Pima dataset contains only women, so diabetes estimates for men are less reliable. This is shown as a limitation, not hidden.</li>
+                </ul>
+                <p className="small muted" style={{ margin: 0 }}>{cards.integrity.ok ? <ShieldCheck size={14} aria-hidden="true" /> : <ShieldX size={14} aria-hidden="true" />} Decision support only. Not a diagnosis and not a medical device.</p>
               </div>
-            );
-          })()}
+            </div>
+          )}
         </section>
       </main>
     </div>

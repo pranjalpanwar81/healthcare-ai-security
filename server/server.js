@@ -9,8 +9,7 @@ import * as store from './lib/store.js';
 import * as audit from './lib/audit.js';
 import { seal, open, rewrap, rotateKek, activeKekVersion, restoreKekVersion, blindIndex, hashPassword, verifyPassword, randomId, jwtSecret } from './lib/crypto.js';
 import { checkNetwork, enrollNetwork, trustedNetworks, removeNetwork } from './lib/network.js';
-import { explain, modelCard, FEATURES } from './lib/xai.js';
-import { explainAll, neuralCard } from './lib/neural.js';
+import { assess, quickRisk, modelCards, allFeatures } from './lib/clinical.js';
 import { startMonitoring } from './lib/anomaly.js';
 import { seedDemo, syncSeedPasswords } from './seed.js';
 
@@ -175,7 +174,13 @@ const strongPassword = (p) => typeof p === 'string' && p.length >= 10 && /[A-Z]/
 const recordView = (r) => ({ id: r.id, createdAt: r.createdAt, authorName: r.authorName, ...open(r.sealed, r.patientId) });
 const patientRecords = (patientId) => db().records.filter((r) => r.patientId === patientId)
   .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(recordView);
-const latestVitals = (records) => records.find((r) => r.vitals && Object.keys(r.vitals).length)?.vitals ?? null;
+// Latest value of each reading across the patient's records (records arrive newest first).
+const latestVitals = (records) => {
+  const merged = {};
+  for (const r of records) for (const [k, v] of Object.entries(r.vitals || {})) if (!(k in merged)) merged[k] = v;
+  return Object.keys(merged).length ? merged : null;
+};
+const summarize = (result) => result.results.filter((r) => r.available).map((r) => `${r.condition}:${r.level}`).join(',') || 'insufficient readings';
 
 // ---------- Public ----------
 app.get('/api/health', (req, res) => res.json({ ok: true, ledgerEntries: db().audit.length }));
@@ -196,10 +201,10 @@ app.post('/api/network/enroll', limit('enroll', 5, 15 * 60 * 1000), (req, res) =
   return res.json({ ok: true, cidr });
 });
 
-app.get('/api/xai/model-card', (req, res) => res.json({ ...modelCard(), features: FEATURES, neural: neuralCard() }));
+app.get('/api/xai/model-card', (req, res) => res.json(modelCards()));
 
 // Public sandbox: explains sample readings. Nothing is stored and no identity is attached.
-app.post('/api/xai/try', limit('xai-try', 30, 60 * 1000), (req, res) => res.json(explainAll(req.body?.vitals || {})));
+app.post('/api/xai/try', limit('xai-try', 30, 60 * 1000), (req, res) => res.json(assess(req.body?.vitals || {})));
 
 // ---------- Auth ----------
 app.post('/api/auth/register', limit('register', 10, 60 * 60 * 1000), (req, res) => {
@@ -290,8 +295,8 @@ app.get('/api/auth/me', auth, (req, res) => {
 
 // ---------- Explainable assessment (any signed-in user) ----------
 app.post('/api/xai/explain', auth, (req, res) => {
-  const result = explainAll(req.body?.vitals || {});
-  audit.record({ actor: req.user, action: 'xai.explain', patientId: req.user.role === 'patient' ? req.user.id : null, outcome: 'success', ip: ipOf(req), detail: { result: result.prediction.key } });
+  const result = assess(req.body?.vitals || {});
+  audit.record({ actor: req.user, action: 'xai.explain', patientId: req.user.role === 'patient' ? req.user.id : null, outcome: 'success', ip: ipOf(req), detail: { result: summarize(result) } });
   res.json(result);
 });
 
@@ -307,7 +312,8 @@ app.get('/api/patient/records', patientOnly, (req, res) => {
 app.get('/api/patient/explanation', patientOnly, (req, res) => {
   const vitals = latestVitals(patientRecords(req.user.id));
   if (!vitals) return res.json({ available: false });
-  return res.json({ available: true, vitals, ...explainAll(vitals) });
+  const result = assess(vitals);
+  return res.json({ available: result.results.some((r) => r.available), vitals, ...result });
 });
 
 app.get('/api/patient/access-log', patientOnly, (req, res) => {
@@ -401,7 +407,7 @@ app.post('/api/doctor/patients/:id/records', clinical, role('doctor'), (req, res
   try {
     const b = req.body || {};
     const vitals = {};
-    for (const f of FEATURES) {
+    for (const f of allFeatures()) {
       const v = Number(b.vitals?.[f.key]);
       if (b.vitals?.[f.key] !== '' && b.vitals?.[f.key] != null && Number.isFinite(v)) vitals[f.key] = v;
     }
@@ -412,7 +418,7 @@ app.post('/api/doctor/patients/:id/records', clinical, role('doctor'), (req, res
       notes: String(b.notes || '').slice(0, 4000),
       medications: Array.isArray(b.medications) ? b.medications.map((m) => String(m).slice(0, 120)).slice(0, 20) : [],
       vitals,
-      assessment: Object.keys(vitals).length ? explain(vitals).prediction : null,
+      assessment: Object.keys(vitals).length ? quickRisk(vitals) : null,
     };
     const rec = { id: randomId('rec'), patientId: p.id, authorId: req.user.id, authorName: req.user.name, createdAt: new Date().toISOString(), sealed: seal(body, p.id) };
     db().records.push(rec);
@@ -427,8 +433,8 @@ app.post('/api/doctor/patients/:id/records', clinical, role('doctor'), (req, res
 app.post('/api/doctor/patients/:id/explain', clinical, role('doctor'), (req, res) => {
   const p = findUser(req.params.id);
   if (!p || !accessFor(req.user.id, p.id).allowed) return fail(res, 403, 'No access to this patient.');
-  const result = explainAll(req.body?.vitals || {});
-  audit.record({ actor: req.user, action: 'xai.explain', patientId: p.id, ip: ipOf(req), detail: { result: result.prediction.key } });
+  const result = assess(req.body?.vitals || {});
+  audit.record({ actor: req.user, action: 'xai.explain', patientId: p.id, ip: ipOf(req), detail: { result: summarize(result) } });
   return res.json(result);
 });
 
@@ -466,6 +472,7 @@ app.get('/api/admin/overview', adminOnly, (req, res) => {
     alerts: d.alerts.slice(0, 50),
     networks: trustedNetworks(),
     you: req.network,
+    modelIntegrity: (() => { const i = modelCards().integrity; return { ok: i.ok, signedAt: i.signedAt, keyFingerprint: i.keyFingerprint, reason: i.reason, files: Object.fromEntries(Object.entries(i.files).map(([k, v]) => [k, { ok: v.ok, reason: v.reason || null, parityError: v.parityError ?? null }])) }; })(),
     encryption: { algorithm: 'AES-256-GCM envelope encryption', activeKeyVersion: activeKekVersion(), sealedRecords: d.records.length, sealedProfiles: d.users.length },
   });
 });

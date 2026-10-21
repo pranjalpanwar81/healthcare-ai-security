@@ -36,5 +36,11 @@
                                         }
                                     ]
                     }
-                ]
+                ],
+    "functions":  {
+                      "api/index.js":  {
+                                           "includeFiles":  "server/models/**",
+                                           "maxDuration":  30
+                                       }
+                  }
 }

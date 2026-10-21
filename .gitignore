@@ -46,3 +46,5 @@ data/
 
 .vercel
 .env*
+ml/.venv/
+ml/**/__pycache__/

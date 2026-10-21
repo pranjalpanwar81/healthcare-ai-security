@@ -20,29 +20,21 @@ HealthGuard is an electronic health record (EHR) system that combines layered se
 
 Why the network check uses IP addresses: browsers cannot read the Wi-Fi name, and any header a browser sends can be forged. The address a request arrives from is the signal the server can actually trust, because hospital Wi-Fi leaves the building through known public addresses.
 
-## Explainable risk assessment
+## Clinical risk models (trained on real data)
 
-Two models run on every risk check, so each result is explained both ways:
+| Condition | Dataset | Selected model | Held-out ROC-AUC | Recall at tuned threshold | Second opinion |
+|---|---|---|---|---|---|
+| Coronary heart disease | UCI Heart Disease, Cleveland (303 patients) | Logistic regression | 0.963 | 82% | Random forest (0.959) |
+| Type 2 diabetes | Pima Indians Diabetes (768 patients) | XGBoost | 0.756 | 69% | Logistic regression (0.769) |
 
-| | Interpretable model | Neural network |
-|---|---|---|
-| Model | Multinomial logistic regression | Multilayer perceptron, 12 → 32 → 16 → 5 |
-| Explanation | Exact weights × measurements (linear SHAP) | Exact Shapley values over all 4,096 coalitions, checked with integrated gradients |
-| Held-out accuracy | about 98% | about 99% |
+- **Model selection.** Logistic regression, random forest, XGBoost and a neural network (MLP) are compared with nested, stratified 5-fold cross-validation (inner grid search on ROC-AUC). The best model per condition is refit and tested once on a 20% hold-out set.
+- **Thresholds.** Alert thresholds come from out-of-fold training predictions (Youden's J), never from the test set. This lifts diabetes recall from 54% to 69%.
+- **Explanations.** Exact interventional Shapley values (SHAP) of the predicted risk, over every combination of readings against a fixed background sample, verified to sum to the prediction on every request. Each result also includes a second opinion from a different model family, counterfactual suggestions ("what would lower this"), and a flag for readings outside the training range.
+- **Fairness.** Held-out performance is reported by sex and age group on the model card.
+- **Model integrity.** Model files are listed with SHA-256 hashes in a manifest signed with Ed25519. The server verifies the signature and hashes, then checks that its JavaScript evaluation reproduces the training library's predictions on stored parity cases. Tampered or mismatched models are never loaded.
+- **Reproducibility.** `ml/scripts/train.py` rebuilds everything: data cleaning, comparison, plots (`ml/reports/`) and the exported models (`server/models/`). Sign new models with `node server/scripts/sign-models.mjs`.
 
-An agreement banner reports whether both models reach the same outcome and share their main factors. Disagreement is flagged for clinical review. The Shapley values are verified to sum exactly to the neural network's output on every request (`server/lib/neural.js`).
-
-### Interpretable model
-
-- **Interpretable by design.** A multinomial logistic regression over 12 routine measurements (age, BMI, blood pressure, heart rate, temperature, fasting glucose, HbA1c, white cell count, CRP, cough duration, fatigue) predicts one of five outcomes: no condition, hypertension risk, diabetes risk, possible bacterial infection, possible viral infection.
-- **Exact attributions.** Because the model is additive, each measurement's contribution to a prediction is computed exactly (linear SHAP). It is not a post-hoc approximation.
-- **Plain-language summary** naming the out-of-range readings that drove the result.
-- **Counterfactuals.** The smallest set of changes toward normal ranges that would change the result.
-- **Model card** with held-out accuracy, per-class precision and recall, global feature importance and limitations, published at `/how-it-works`.
-- The model trains at server start-up on a seeded synthetic cohort, so results are reproducible and nothing depends on external services.
-
-Decision support only. The model uses synthetic data and is not a medical device.
-
+Datasets: Pima Indians Diabetes Database (National Institute of Diabetes and Digestive and Kidney Diseases). Heart Disease (Cleveland), UCI Machine Learning Repository, Janosi, Steinbrunn, Pfisterer and Detrano (1988), CC BY 4.0. Decision support only; not a diagnosis and not a medical device.
 ## Roles
 
 - **Patient**: records, health check with explanation, care team (read-only), emergency-access notices, access history with reporting.

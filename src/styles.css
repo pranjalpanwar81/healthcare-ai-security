@@ -593,3 +593,8 @@ body { background: var(--canvas); }
 .model-switch button[aria-selected='true'] { background: var(--bg); color: var(--brand); box-shadow: var(--shadow); }
 .model-switch button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
 .compare-table td, .compare-table th { white-space: nowrap; }
+
+.reading-group { border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px 18px; }
+.reading-group legend { padding: 0 8px; font-family: var(--display); font-weight: 600; font-size: 1.05rem; }
+.integrity-line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; color: var(--ok); font-weight: 700; }
+.integrity-line .muted { font-weight: 400; }

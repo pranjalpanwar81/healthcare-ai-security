@@ -21,13 +21,13 @@ One Node service. Express serves the API under `/api` and the built React app fr
 - `server/lib/store.js`: a JSON file at `server/data/healthguard.json` locally (gitignored). On Vercel, the same document lives in the private Blob store `healthguard-data` at `healthguard/db.json` (`BLOB_READ_WRITE_TOKEN`), refreshed before each API request and flushed before each response. Seeds initial accounts on first boot (`server/seed.js`).
 - Frontend `src/`: React 19 + React Router. Design world "Clinical Label" (UI-Lab niche world 18): Atkinson Hyperlegible, white/ink, teal brand, status = icon + word + colour. Text-size and dark-mode toggles, skip link, focus moved to h1 on navigation, 44px targets.
 
-## Two-model explainability (2026-10-21)
-`server/lib/neural.js`: a multilayer perceptron (12-32-16-5, ReLU, 1,029 parameters) trained with Adam (20 epochs) on the same cohort as the logistic regression. It reaches about 99% held-out accuracy versus 98% for the regression.
-- Explained with exact interventional Shapley values: all 4,096 coalitions against 16 fixed background patients, about 0.3 s per explanation. They sum to f(x) - E[f] (error about 1e-16, reported as the faithfulness check).
-- Integrated gradients (48 steps, average-patient baseline) as a cross-check, with the completeness error reported.
-- `explainAll()` returns the linear result plus `neural` plus `agreement` (same outcome, shared top-3 factors; level strong, partial or disagree). The model card includes both models: outcome agreement about 98.6%, top-factor overlap about 71%.
-- Cold start trains both models in about 2.6 s.
-
+## Clinical models (since 2026-10-22; replaced the synthetic xai.js and neural.js)
+- Training: `ml/scripts/train.py` (venv `ml/.venv`, gitignored, with --system-site-packages plus shap). Data in `ml/data` (Pima 768, Cleveland 303). Nested 5-fold CV over LR, RF, XGBoost and MLP. Selected by mean CV ROC-AUC. Youden threshold from out-of-fold training predictions. Fairness by sex and age. SHAP plots, ROC and calibration in `ml/reports`.
+- Results: heart uses LR (test AUC 0.963, recall 82%) with RF as second opinion; diabetes uses XGBoost (test AUC 0.756, recall 69%) with LR as second opinion. Diabetes CV AUC is 0.86 versus test 0.76, a gap from one small split that is reported honestly. Pima is women only (a stated limitation).
+- Export: `server/models/{heart,diabetes}.json` (preprocessing, both models, background, training ranges, card, parity cases). `server/lib/clinical.js` evaluates the models in JS (XGBoost splits compared in float32 via Math.fround). Exact interventional SHAP against the background. `quickRisk()` is used for record saving and seeding, which is fast.
+- Integrity: `server/lib/integrity.js` verifies the Ed25519-signed `manifest.json` and `manifest.sig` with `signing-public.pem`. The private key is at `C:\Users\Harsh\Projects\.tools\healthguard-model-signing.pem` (never commit it). Re-sign after every retrain: `node server/scripts/sign-models.mjs`. Parity must be within 1e-6, or the model is refused.
+- vercel.json `functions.api/index.js.includeFiles = server/models/**`.
+- Readings are stored per record under feature keys. `latestVitals` merges the latest value of each key across records.
 ## Why the Wi-Fi check changed
 v1 trusted an `x-wifi-ssid` header sent by the browser, which any client can forge, and browsers cannot read the SSID anyway. v2 uses the egress IP of the hospital network as seen by the server. Kalaza Care never implemented Wi-Fi auth (it stayed on that project's backlog), so there was no pattern to copy.
 
@@ -47,7 +47,7 @@ Patients do not choose their doctors. The security officer (hospital administrat
 Dev defaults: enrol code `HOSPITAL-IT-2026`, doctor code `DOCTOR-2026`.
 
 ## Run locally
-`npm install && npm --prefix server install`, then `npm --prefix server start` (API on 3001) and `npm run dev` (Vite on 5173, proxies /api). Security test suite: `npm --prefix server test` (88 checks; run against a fresh DATA_DIR on another port).
+`npm install && npm --prefix server install`, then `npm --prefix server start` (API on 3001) and `npm run dev` (Vite on 5173, proxies /api). Security test suite: `npm --prefix server test` (91 checks; run against a fresh DATA_DIR on another port).
 
 ## Deployment
 Vercel (see the next section). Render config was removed.
@@ -66,6 +66,7 @@ Vercel (see the next section). Render config was removed.
 ## Log
 - 2026-10-21: Premium visual layer (v3 block at the end of styles.css): Fraunces display headings, warm ivory canvas, evergreen and brass, dark sidebar, dark landing hero, entrance motion.
 - 2026-10-21: Care teams assigned by hospital, patient reporting, app shell redesign, 78-check suite, fixed malformed-JSON 500 and public top bar showing Sign in while signed in.
+- 2026-10-22: Real-data models (Pima, Cleveland) with nested CV selection, tuned thresholds, fairness, signed model integrity and parity checks; synthetic models removed.
 - 2026-10-21: Neural network with SHAP and integrated gradients beside the interpretable model; agreement banner and model switch in the UI; dead code removed (LangChain service, ml/, old CSS and the Tabs component; server deps cut to 4).
 - 2026-10-21: Easy passwords set at Harsh's request (in the SEED_PASSWORDS secret). `syncSeedPasswords()` re-applies the secret to the listed accounts whenever it changes.
 - 2026-10-21: Shared Blob store, per-account seed passwords via secret, demo panel removed, LHBC networks trusted.`n- 2026-10-21: Deployed to Vercel (serverless API, stable ids).

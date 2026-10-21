@@ -1,0 +1,8 @@
+{
+  "signedAt": "2026-10-21T21:33:23.839Z",
+  "algorithm": "Ed25519 over SHA-256 file hashes",
+  "files": {
+    "diabetes.json": "4c59a9f2e614cbf6625edf5d7ccff67c22655587a4ad050bf40d836f22016c6e",
+    "heart.json": "6eefb506f3f9d2d1b6332ca461acc96aea049851ab508f3688c24e97db596772"
+  }
+}

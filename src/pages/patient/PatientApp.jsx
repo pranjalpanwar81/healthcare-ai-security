@@ -5,6 +5,7 @@ import { api } from '../../api.js';
 import { AppShell, Badge, Empty, Field, Loading, Modal, Notice, fmtDate, fmtDateTime, initials, useAsync, usePageTitle, useSession, useToast } from '../../ui.jsx';
 import Explanation from '../../components/Explanation.jsx';
 import AccessLedger, { IntegritySeal } from '../../components/AccessLedger.jsx';
+import { featureLabels, formatReading, useModelCards } from '../../components/VitalsForm.jsx';
 
 const NAV = [
   { to: '/patient', label: 'Overview', short: 'Home', icon: Home, end: true },
@@ -32,8 +33,8 @@ const ErrorNotice = ({ error, retry }) => (
   <Notice tone="error" title="Could not load this page">{error.message} {retry && <button className="btn btn-sm" onClick={retry} style={{ marginLeft: 8 }}>Try again</button>}</Notice>
 );
 
-const toneOf = (prediction) => (prediction.tone === 'ok' ? 'ok' : prediction.tone === 'alert' ? 'alert' : 'warn');
-const advice = { ok: 'Nothing flagged', warn: 'Worth discussing with your doctor', alert: 'Please contact your doctor soon' };
+const LEVEL = { high: ['alert', 'Raised risk: please talk to your doctor'], borderline: ['warn', 'Borderline: worth discussing'], low: ['ok', 'Low risk'] };
+const topResult = (xai) => (xai.available ? [...xai.results.filter((r) => r.available)].sort((a, b) => b.risk - a.risk)[0] : null);
 
 function Overview() {
   usePageTitle('Overview');
@@ -57,11 +58,11 @@ function Overview() {
           <h1 id="greet">{greet}, {user.name.split(' ')[0]}</h1>
           <p>Your record is encrypted, and only your care team can open it. Every access is listed in your history.</p>
         </div>
-        {xai.available ? (
+        {topResult(xai) ? (
           <div className="status-card">
             <p className="label-kicker">Latest health check</p>
-            <strong className="result">{xai.prediction.label}</strong>
-            <div><Badge tone={toneOf(xai.prediction)}>{advice[toneOf(xai.prediction)]}</Badge></div>
+            <strong className="result">{topResult(xai).label}: {Math.round(topResult(xai).risk * 100)}% estimated risk</strong>
+            <div><Badge tone={LEVEL[topResult(xai).level][0]}>{LEVEL[topResult(xai).level][1]}</Badge></div>
             <Link to="/patient/health" className="btn btn-sm btn-primary" style={{ justifySelf: 'start' }}>See why <ArrowRight size={16} aria-hidden="true" /></Link>
           </div>
         ) : (
@@ -120,8 +121,8 @@ function Records() {
 }
 
 export function RecordCard({ r }) {
-  const v = r.vitals || {};
-  const shown = [['Blood pressure', v.systolic && v.diastolic ? `${v.systolic}/${v.diastolic} mmHg` : v.systolic ? `${v.systolic} mmHg systolic` : null], ['Heart rate', v.heartRate && `${v.heartRate} bpm`], ['Temperature', v.temperature && `${v.temperature} °C`], ['Fasting glucose', v.glucose && `${v.glucose} mg/dL`], ['HbA1c', v.hba1c && `${v.hba1c}%`], ['BMI', v.bmi && `${v.bmi}`]].filter(([, x]) => x);
+  const labels = featureLabels(useModelCards());
+  const shown = Object.entries(r.vitals || {}).filter(([k]) => labels[k]).slice(0, 12).map(([k, v]) => [labels[k].label, formatReading(labels[k], v)]);
   return (
     <article className="card stack" aria-labelledby={`r-${r.id}`}>
       <div className="spread">

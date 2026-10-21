@@ -29,11 +29,20 @@ check('security headers set', health.headers.get('x-frame-options') === 'DENY' &
 check('no framework fingerprint header', !health.headers.get('x-powered-by'));
 check('unknown API route is 404', (await call('GET', '/api/nope')).status === 404);
 const card = await call('GET', '/api/xai/model-card');
-check('model card is public and accurate enough', card.status === 200 && card.body.accuracy > 0.9 && card.body.features.length === 12, `acc ${card.body.accuracy?.toFixed(3)}`);
-const tryIt = await call('POST', '/api/xai/try', { vitals: { temperature: 39, wbc: 17, crp: 120, coughDays: 7, heartRate: 105 } });
-check('public sandbox explains without sign-in', tryIt.body.prediction?.key === 'bacterial', tryIt.body.prediction?.key);
-const junk = await call('POST', '/api/xai/try', { vitals: { age: 'abc', bmi: 1e9, systolic: -5 } });
-check('garbage readings are clamped, not crashed', junk.status === 200 && junk.body.missing.includes('Age'));
+const heartCard = card.body.conditions?.find((c) => c.key === 'heart');
+const diabCard = card.body.conditions?.find((c) => c.key === 'diabetes');
+check('model cards are public for both conditions', card.status === 200 && heartCard && diabCard);
+check('models pass signed integrity and parity checks', card.body.integrity?.ok === true && Object.values(card.body.integrity.files).every((f) => f.ok && f.parityError < 1e-6));
+check('selected models beat chance clearly on held-out data', heartCard.selected.test.rocAuc > 0.8 && diabCard.selected.test.rocAuc > 0.7, `heart ${heartCard.selected.test.rocAuc.toFixed(3)}, diabetes ${diabCard.selected.test.rocAuc.toFixed(3)}`);
+check('four algorithms were compared per condition', Object.keys(heartCard.card.comparison).length === 4 && Object.keys(diabCard.card.comparison).length === 4);
+const SICK_HEART = { age: 62, sex: 1, chestPain: 4, restingBP: 150, cholesterol: 270, fastingSugar: 0, restingECG: 2, maxHeartRate: 118, exerciseAngina: 1, stDepression: 2.2, stSlope: 2, vessels: 2, thal: 7 };
+const tryIt = await call('POST', '/api/xai/try', { vitals: SICK_HEART });
+const tryHeart = tryIt.body.results?.find((r) => r.condition === 'heart');
+check('public sandbox explains without sign-in', tryHeart?.available && tryHeart.level === 'high', `${tryHeart?.level} ${(tryHeart?.risk * 100).toFixed(0)}%`);
+check('too few readings are declined, not guessed', tryIt.body.results.find((r) => r.condition === 'diabetes')?.available === false);
+const junk = await call('POST', '/api/xai/try', { vitals: { ...SICK_HEART, age: 'abc', cholesterol: 1e9, chestPain: 99 } });
+const junkHeart = junk.body.results?.find((r) => r.condition === 'heart');
+check('garbage readings are clamped or dropped, not crashed', junk.status === 200 && junkHeart.missing.includes('Age') && junkHeart.missing.includes('Chest pain type'));
 check('malformed JSON rejected cleanly', (await call('POST', '/api/auth/login', '{bad json')).status === 400);
 check('oversized body rejected', (await call('POST', '/api/xai/try', { pad: 'x'.repeat(200000) })).status === 413);
 
@@ -75,7 +84,7 @@ check('account locks after 5 wrong passwords', (await call('POST', '/api/auth/lo
 section('Patient data');
 const recs = await call('GET', '/api/patient/records', undefined, pat.cookie);
 check('patient reads own decrypted records', recs.status === 200 && recs.body.records.length === 2);
-check('patient sees an explained health check', (await call('GET', '/api/patient/explanation', undefined, pat.cookie)).body.prediction?.key === 'hypertension');
+check('patient sees an explained health check', (await call('GET', '/api/patient/explanation', undefined, pat.cookie)).body.results?.some((r) => r.available && r.condition === 'heart'));
 check('patient cannot use doctor API', (await call('GET', '/api/doctor/patients', undefined, pat.cookie)).status === 403);
 check('patient cannot use admin API', (await call('GET', '/api/admin/overview', undefined, pat.cookie)).status === 403);
 
@@ -119,25 +128,22 @@ check('emergency access opens the chart', chart.status === 200 && chart.body.acc
 
 section('Records');
 check('record without a title rejected', (await call('POST', `/api/doctor/patients/${rohanId}/records`, { notes: 'x' }, doc.cookie)).status === 400);
-const add = await call('POST', `/api/doctor/patients/${rohanId}/records`, { title: 'Phone consultation', notes: 'Feeling better.', vitals: { systolic: 138, diastolic: 88, age: 'x' }, medications: ['Amlodipine 5 mg'] }, doc.cookie);
+const add = await call('POST', `/api/doctor/patients/${rohanId}/records`, { title: 'Phone consultation', notes: 'Feeling better.', vitals: { restingBP: 138, cholesterol: 240, age: 'x' }, medications: ['Amlodipine 5 mg'] }, doc.cookie);
 check('doctor writes a sealed record with an assessment', add.status === 201 && add.body.record.title === 'Phone consultation' && add.body.record.assessment && !('age' in add.body.record.vitals));
 check('patient sees the new record', (await call('GET', '/api/patient/records', undefined, pat.cookie)).body.records.length === 3);
 const iyerChart = await call('GET', `/api/doctor/patients/${rohanId}`, undefined, iyer.cookie);
 check('second care-team doctor sees the same record', iyerChart.status === 200 && iyerChart.body.records.length === 3);
 
 section('Explainable assessment');
-const xai = await call('POST', '/api/xai/explain', { vitals: { systolic: 160, diastolic: 100, age: 60, bmi: 30 } }, pat.cookie);
-check('explanation returns prediction and attributions', xai.body.prediction?.key === 'hypertension' && xai.body.contributions?.length === 12, xai.body.prediction?.key);
-const sumImpact = xai.body.contributions.reduce((s, c) => s + c.impact, 0);
-check('attributions are finite numbers', Number.isFinite(sumImpact));
-check('probabilities sum to one', Math.abs(xai.body.probabilities.reduce((s, p) => s + p.probability, 0) - 1) < 1e-6);
-check('counterfactual offered for a flagged result', Array.isArray(xai.body.counterfactual?.changes));
-check('neural network is explained alongside', xai.body.neural?.prediction?.key && xai.body.neural.contributions.length === 12);
-check('SHAP values add up exactly to the neural output', xai.body.neural.faithfulness.error < 1e-9, xai.body.neural.faithfulness.error.toExponential(1));
-check('integrated gradients agree with SHAP within 2 points', xai.body.neural.faithfulness.integratedGradientsError < 0.02);
-check('agreement between models is reported', ['strong', 'partial', 'disagree'].includes(xai.body.agreement?.level), xai.body.agreement?.level);
-check('model card covers both models', card.body.neural?.accuracy > 0.9 && card.body.neural.comparison.outcomeAgreement > 0.9, `nn ${card.body.neural?.accuracy?.toFixed(3)}`);
-check('healthy readings flag nothing', (await call('POST', '/api/xai/try', { vitals: { age: 30, bmi: 22, systolic: 114, diastolic: 74, heartRate: 70, temperature: 36.6, glucose: 86, hba1c: 5, wbc: 6.5, crp: 2, coughDays: 0, fatigue: 2 } })).body.prediction?.key === 'healthy');
+const xai = await call('POST', '/api/xai/explain', { vitals: { age: 48, pregnancies: 3, glucose: 182, bloodPressure: 84, skinThickness: 34, insulin: 220, bmi: 35.2, pedigree: 0.8 } }, pat.cookie);
+const diab = xai.body.results?.find((r) => r.condition === 'diabetes');
+check('diabetes risk explained with one Shapley value per reading', diab?.available && diab.contributions.length === 8, `${diab?.level} ${(diab?.risk * 100).toFixed(0)}%`);
+check('SHAP values add up exactly to the model output', diab.faithfulness.error < 1e-9, diab.faithfulness.error.toExponential(1));
+check('a second model family gives an opinion', diab.secondOpinion?.name && diab.secondOpinion.name !== diab.model.name && typeof diab.secondOpinion.agree === 'boolean', diab.secondOpinion?.name);
+check('counterfactual offered for a raised risk', diab.level !== 'high' || Array.isArray(diab.counterfactual?.changes));
+const odd = await call('POST', '/api/xai/try', { vitals: { ...SICK_HEART, cholesterol: 590 } });
+check('readings outside the training range are flagged', odd.body.results.find((r) => r.condition === 'heart').outOfRange.length > 0);
+check('healthy readings are low risk', (await call('POST', '/api/xai/try', { vitals: { age: 34, sex: 0, chestPain: 3, restingBP: 116, cholesterol: 182, fastingSugar: 0, restingECG: 0, maxHeartRate: 182, exerciseAngina: 0, stDepression: 0, stSlope: 1, vessels: 0, thal: 3 } })).body.results.find((r) => r.condition === 'heart').level === 'low');
 
 section('Transparency and reporting');
 const log = await call('GET', '/api/patient/access-log', undefined, pat.cookie);
@@ -177,6 +183,27 @@ check('ledger still verifies after removal', (await call('POST', '/api/admin/aud
 section('Sign-out');
 check('logout succeeds', (await call('POST', '/api/auth/logout', undefined, pat.cookie)).status === 200);
 check('old session token is revoked', (await call('GET', '/api/patient/records', undefined, pat.cookie)).status === 401);
+
+section('Model integrity (offline)');
+{
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { verifyModels } = await import('./lib/integrity.js');
+  const src = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1')), 'models');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hg-models-'));
+  for (const n of fs.readdirSync(src)) fs.copyFileSync(path.join(src, n), path.join(tmp, n));
+  const names = ['heart.json', 'diabetes.json'];
+  check('untouched models verify', verifyModels(tmp, names).ok === true);
+  const heartPath = path.join(tmp, 'heart.json');
+  fs.writeFileSync(heartPath, fs.readFileSync(heartPath, 'utf8').replace('"intercept":', '"intercept":0.5+'));
+  const tampered = verifyModels(tmp, names);
+  check('an edited model file is rejected', tampered.files['heart.json'].ok === false && tampered.files['diabetes.json'].ok === true);
+  const manifestPath = path.join(tmp, 'manifest.json');
+  fs.writeFileSync(manifestPath, fs.readFileSync(manifestPath, 'utf8').replace(/"heart.json": "[0-9a-f]+"/, '"heart.json": "0000"'));
+  check('a forged manifest is rejected', verifyModels(tmp, names).ok === false && /signature/.test(verifyModels(tmp, names).reason || ''));
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
 
 console.log(failures ? `\n${failures} of ${total} check(s) failed` : `\nAll ${total} checks passed`);
 process.exit(failures ? 1 : 0);
